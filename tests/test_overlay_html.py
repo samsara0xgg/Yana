@@ -147,6 +147,14 @@ def test_levels_are_only_sent_while_recording() -> None:
     assert [m for m in sent if m["t"] == "level"] == [{"t": "level", "v": 1.0}]
 
 
+def test_words_so_far_are_only_sent_while_recording() -> None:
+    overlay, sent = _overlay()
+    overlay.update_live("听不到")
+    overlay.show("rec", mode="click")
+    overlay.update_live("专门开个 session")
+    assert [m for m in sent if m["t"] == "live"] == [{"t": "live", "text": "专门开个 session"}]
+
+
 def test_unknown_states_are_not_sent() -> None:
     overlay, sent = _overlay()
     overlay.show("thinking")

@@ -77,14 +77,17 @@ function general() {
 }
 
 function dictation() {
-  const p = S.prefs, cloud = p.asr_engine === 'qwen';
+  const p = S.prefs, cloud = p.asr_engine !== 'local';
   return head(paneTitle('dictation'))
     + grp([
       row(L('识别语言', 'Spoken language'), select('language', S.language, LANGS(), L('识别语言', 'Spoken language')),
         L('自动会听出你说的语言，混着说也行。只说一种语言时才固定它，否则别的语言可能被认错或翻译。', 'Automatic hears which language you speak, even mixed. Fix one only if it is the only language you speak; others may be misheard or translated.')),
-      row(L('语音识别', 'Speech recognition'), seg('asr_engine', p.asr_engine, [['local', L('这台 Mac', 'This Mac')], ['qwen', L('千问（云端）', 'Qwen (cloud)')]]),
-        cloud ? L('边说边传到阿里云新加坡识别，松手后不到 1 秒出字。没有 Key、断网或出错时自动用这台 Mac 上的模型。想要原话直出，把下面的润色关掉。',
-          'Streams to Alibaba Cloud in Singapore while you talk; text arrives under a second after you finish. With no key, no network or an error, the model on this Mac takes over. For your exact words, turn Refine off below.')
+      row(L('语音识别', 'Speech recognition'), seg('asr_engine', p.asr_engine, [['local', L('这台 Mac', 'This Mac')], ['qwen', L('千问', 'Qwen')], ['qwen_message', L('千问 · 自带润色', 'Qwen · tidied')]]),
+        cloud ? (p.asr_engine === 'qwen_message'
+          ? L('千问的语音输入模型：说话时胶囊里一个字一个字出，同时去掉“嗯”“呃”、重复和改口，句子基本不改。',
+            'Qwen’s voice-input model: words appear in the capsule as you talk, with ums, repeats and false starts dropped and the sentences left as they are.')
+          : L('千问逐字照录：说话时胶囊里一个字一个字出，松手后不到 1 秒出完。', 'Qwen writes down what you say: words appear in the capsule as you talk, and the rest comes under a second after you finish.'))
+          + L('音频边说边传到阿里云新加坡。没有 Key、断网或出错时自动用这台 Mac 上的模型。', ' Audio streams to Alibaba Cloud in Singapore. With no key, no network or an error, the model on this Mac takes over.')
           : L('Whisper 在这台 Mac 上识别，音频不离开电脑。', 'Whisper recognizes speech on this Mac; audio never leaves it.')),
       ...(cloud ? [keyRow(S.asrKey)] : []),
       row(L('模型下载源', 'Model download'), select('model_source', p.model_source, SOURCES(), L('模型下载源', 'Model download')),
@@ -284,9 +287,9 @@ function privacy() {
         L('最多约 300 字，用来按上文写对人名、术语和同音字。会多花一点费用和时间，默认关闭；密码框从不读取。',
           'Up to about 300 characters, to get names, terms and homophones right from context. Costs a little more time and money, so it is off by default; password fields are never read.')),
       row(L('所选文字', 'The selected text'), sw('rewrite_selection', p.rewrite_selection, L('发送所选文字', 'Send the selected text')), L('只在“改写所选文字”时发送。', 'Only when rewriting the selection.')),
-      row(L('音频', 'Audio'), p.asr_engine === 'qwen'
+      row(L('音频', 'Audio'), p.asr_engine !== 'local'
         ? `<span class="val">${L('发给阿里云识别', 'Sent to Alibaba Cloud')}</span>` : `<span class="val">${L('从不离开这台 Mac', 'Never leaves this Mac')}</span>`,
-        p.asr_engine === 'qwen' ? L('语音识别选了千问：录音时音频边说边传到阿里云新加坡，只用来识别。', 'Speech recognition is set to Qwen: audio streams to Alibaba Cloud in Singapore while you talk, only to be recognized.') : ''),
+        p.asr_engine !== 'local' ? L('语音识别选了千问：录音时音频边说边传到阿里云新加坡，只用来识别。', 'Speech recognition is set to Qwen: audio streams to Alibaba Cloud in Singapore while you talk, only to be recognized.') : ''),
     ])
     + grp([
       row(L('发送匿名使用统计', 'Send anonymous usage stats'), sw('send_usage_stats', p.send_usage_stats, L('发送匿名使用统计', 'Send anonymous usage stats')),

@@ -125,6 +125,9 @@ class Capsule:
     def update_level(self, level: float) -> None:
         self._draw(self.overlay and self.overlay.update_level, level)
 
+    def update_live(self, text: str) -> None:
+        self._draw(self.overlay and self.overlay.update_live, text)
+
     def set_handle(self, on: bool) -> None:
         self._draw(self.overlay and self.overlay.set_handle, bool(on))
 

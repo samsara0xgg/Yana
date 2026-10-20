@@ -31,8 +31,9 @@ CHOICES: dict[str, tuple[Any, ...]] = {
     "ui_language": i18n.CHOICES,
     # Where the speech model downloads from; "auto" is the mirror in mainland China.
     "model_source": reach.MODEL_SOURCES,
-    # Who hears the recording: Whisper on this Mac, or Qwen in Alibaba's cloud while he talks.
-    "asr_engine": ("local", "qwen"),
+    # Who hears the recording: Whisper on this Mac, or Qwen in Alibaba's cloud while
+    # he talks (verbatim, or the voice-input model that tidies as it goes).
+    "asr_engine": ("local", "qwen", "qwen_message"),
 }
 
 

@@ -1556,10 +1556,22 @@ class TypelessLocalApp:
         """With Qwen chosen and its key set: a stream the microphone feeds from its first block."""
 
         stream = None
-        if self.prefs.asr_engine == "qwen":
-            stream = cloud_asr.stream_if_set_up(getattr(self, "vocab", []) or [], int(getattr(self.config, "sample_rate", 16000)))
+        engine = self.prefs.asr_engine
+        if engine in ("qwen", "qwen_message"):
+            stream = cloud_asr.stream_if_set_up(
+                getattr(self, "vocab", []) or [],
+                int(getattr(self.config, "sample_rate", 16000)),
+                model=cloud_asr.MESSAGE_MODEL if engine == "qwen_message" else cloud_asr.MODEL,
+                on_text=partial(self._show_words_so_far, getattr(self, "_active_session_id", 0)),
+            )
         self.recorder.on_chunk = stream.feed if stream is not None else None
         return stream
+
+    def _show_words_so_far(self, session_id: int, text: str) -> None:
+        """Qwen's worker: the capsule shows what has been heard while he is still talking."""
+
+        if self.state == "recording" and session_id == getattr(self, "_active_session_id", 0):
+            self.capsule.update_live(text)
 
     def _close_cloud_stream(self) -> cloud_asr.QwenStream | None:
         """Unhook this dictation's stream from the microphone and hand it over."""
