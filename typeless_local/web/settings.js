@@ -84,9 +84,9 @@ function dictation() {
         L('自动会听出你说的语言，混着说也行。只说一种语言时才固定它，否则别的语言可能被认错或翻译。', 'Automatic hears which language you speak, even mixed. Fix one only if it is the only language you speak; others may be misheard or translated.')),
       row(L('语音识别', 'Speech recognition'), seg('asr_engine', p.asr_engine, [['local', L('这台 Mac', 'This Mac')], ['qwen', L('千问', 'Qwen')], ['qwen_message', L('千问 · 自带润色', 'Qwen · tidied')]]),
         cloud ? (p.asr_engine === 'qwen_message'
-          ? L('千问的语音输入模型：说话时胶囊里一个字一个字出，同时去掉“嗯”“呃”、重复和改口，句子基本不改。',
-            'Qwen’s voice-input model: words appear in the capsule as you talk, with ums, repeats and false starts dropped and the sentences left as they are.')
-          : L('千问逐字照录：说话时胶囊里一个字一个字出，松手后不到 1 秒出完。', 'Qwen writes down what you say: words appear in the capsule as you talk, and the rest comes under a second after you finish.'))
+          ? L('千问的语音输入模型：去掉“嗯”“呃”、重复和改口，句子基本不改，松手后不到 1 秒出字。',
+            'Qwen’s voice-input model: ums, repeats and false starts dropped, sentences left as they are; text arrives under a second after you finish.')
+          : L('千问逐字照录，松手后不到 1 秒出字。', 'Qwen writes down what you say; text arrives under a second after you finish.'))
           + L('音频边说边传到阿里云新加坡。没有 Key、断网或出错时自动用这台 Mac 上的模型。', ' Audio streams to Alibaba Cloud in Singapore. With no key, no network or an error, the model on this Mac takes over.')
           : L('Whisper 在这台 Mac 上识别，音频不离开电脑。', 'Whisper recognizes speech on this Mac; audio never leaves it.')),
       ...(cloud ? [keyRow(S.asrKey)] : []),

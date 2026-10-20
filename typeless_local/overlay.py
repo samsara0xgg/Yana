@@ -298,11 +298,6 @@ class FloatingOverlay(NSObject):
             self._send({"t": "level", "v": round(max(0.0, min(1.0, float(level))), 4)})
 
     @objc.python_method
-    def update_live(self, text: str) -> None:
-        if self._state == "rec":
-            self._send({"t": "live", "text": str(text or "")})
-
-    @objc.python_method
     def set_handle(self, on: bool) -> None:
         """The thin line above the Dock that turns into a mic button on hover."""
 

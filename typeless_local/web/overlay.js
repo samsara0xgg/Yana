@@ -144,12 +144,10 @@ function recHTML() {
       L('没有检测到声音，检查一下麦克风', 'No sound detected. Check the microphone.')];
   }
   const selSay = o.sel ? L('，将改写所选文字', ', rewriting the selection') : '';
-  // Cloud recognition shows the words as they are heard, in place of the wave.
-  const wave = S.live ? `<span class="raw live">${esc(tail(S.live))}</span>` : waveHTML();
   switch (S.mode) {
-    case 'hold': return [`<span class="recdot"></span>${sel}${wave}<span class="hint">${L('松开完成', 'Release to finish')}</span>`, L('录音中，松开按键完成', 'Recording. Release the key to finish') + selSay];
-    case 'latch': return [`${btnCancel()}${lock}${sel}${duck}${wave}<span class="tmr">${S.tmrText}</span>${btnFinish()}`, L('已锁定录音，再点一下右 ⌘ 完成', 'Recording locked. Tap right ⌘ again to finish') + selSay];
-    default: return [`${btnCancel()}${sel}${duck}${wave}<span class="tmr">${S.tmrText}</span>${btnFinish()}`, L('录音中，再点一下右 ⌘ 完成', 'Recording. Tap right ⌘ again to finish') + selSay];
+    case 'hold': return [`<span class="recdot"></span>${sel}${waveHTML()}<span class="hint">${L('松开完成', 'Release to finish')}</span>`, L('录音中，松开按键完成', 'Recording. Release the key to finish') + selSay];
+    case 'latch': return [`${btnCancel()}${lock}${sel}${duck}${waveHTML()}<span class="tmr">${S.tmrText}</span>${btnFinish()}`, L('已锁定录音，再点一下右 ⌘ 完成', 'Recording locked. Tap right ⌘ again to finish') + selSay];
+    default: return [`${btnCancel()}${sel}${duck}${waveHTML()}<span class="tmr">${S.tmrText}</span>${btnFinish()}`, L('录音中，再点一下右 ⌘ 完成', 'Recording. Tap right ⌘ again to finish') + selSay];
   }
 }
 
@@ -546,7 +544,7 @@ on('show', m => {
     const entering = S.st !== 'rec';
     if (d.elapsed != null) S.recAt = now - (+d.elapsed) * 1000;
     else if (entering) S.recAt = now;
-    if (entering) { S.lastVoice = now; S.quiet = false; S.heard = false; S.cd = false; S.live = ''; }
+    if (entering) { S.lastVoice = now; S.quiet = false; S.heard = false; S.cd = false; }
     S.mode = d.mode || 'click';
     if (d.max != null) S.max = +d.max;
     // Extended: back from the countdown to the running timer.
@@ -565,18 +563,6 @@ on('level', m => {
     S.heard = true;
     if (S.quiet && S.st === 'rec') { S.quiet = false; rerenderRec(); }
   }
-});
-on('live', m => {
-  if (S.st !== 'rec') return;
-  S.live = String(m.text || '');
-  S.heard = true;
-  const el = S.layer && S.layer.querySelector('.live');
-  if (S.cd) return;  // the countdown keeps its wave
-  if (!el) { rerenderRec(); return; }
-  // Changed in place: a re-render would cross-fade the whole capsule on every word.
-  el.textContent = tail(S.live);
-  const w = Math.max(40, Math.ceil(S.layer.offsetWidth));
-  if (S.last && w !== S.last.capW) { S.last.capW = w; relayout(); }
 });
 on('pointer', m => pointer(m.x, m.y));
 on('env', m => {

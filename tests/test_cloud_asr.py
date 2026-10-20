@@ -4,7 +4,6 @@ import json
 import socket
 import struct
 import threading
-import time
 
 import numpy as np
 
@@ -182,38 +181,27 @@ def test_hotwords_keep_within_the_limits():
     assert words == {"言字": 4, "Claude Code": 4}
 
 
-def test_the_voice_input_model_polishes_and_tells_each_word_as_it_comes():
+def test_the_voice_input_model_polishes():
     def script(server: FakeServer) -> None:
         _, payload = server.read()
         server.run_task = json.loads(payload)
         server.event("task-started")
-        server.read()  # the first frame: he is talking
-        server.sentence(1, "专门", 0, None, final=False)
-        server.sentence(1, "专门开个 session。", 0, 1000)
-        server.sentence(2, "先定", 1000, None, final=False)
-        server.sentence(2, "先定了。", 1000, 2000)
-        _start_and_collect_rest(server)
-        server.event("task-finished")
-
-    def _start_and_collect_rest(server: FakeServer) -> None:
         while True:
             opcode, payload = server.read()
             if opcode == 0x1 and json.loads(payload)["header"]["action"] == "finish-task":
-                return
+                break
+        server.sentence(1, "专门开个 session。", 0, 1000)
+        server.sentence(2, "先定了。", 1000, 2000)
+        server.event("task-finished")
 
     server = FakeServer(script)
-    told = []
-    stream = cloud_asr.QwenStream("sk-test", url=server.url, model=cloud_asr.MESSAGE_MODEL, on_text=told.append)
+    stream = cloud_asr.QwenStream("sk-test", url=server.url, model=cloud_asr.MESSAGE_MODEL)
     stream.start()
     audio = _speech(2.0, 0.3)
     stream.feed(audio)
-    deadline = time.monotonic() + 5
-    while len(told) < 4 and time.monotonic() < deadline:
-        time.sleep(0.01)
     result = stream.finish(audio, timeout=5)
 
     params = server.run_task["payload"]["parameters"]
     assert server.run_task["payload"]["model"] == "qwen-audio-3.1-asr-flash-message"
-    assert params["disfluency_removal_enabled"] is True and params["intermediate_result_enabled"] is True
-    assert told == ["专门", "专门开个 session。", "专门开个 session。先定", "专门开个 session。先定了。"]
+    assert params["disfluency_removal_enabled"] is True
     assert result is not None and result.text == "专门开个 session。先定了。"
