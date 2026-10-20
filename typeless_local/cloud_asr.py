@@ -312,6 +312,14 @@ class QwenStream:
             parameters["language_hints"] = self._languages
         if extras and self._context:
             task_input["context"] = self._context
+        # What steered this dictation, for checking by hand in app.log.
+        LOGGER.info(
+            "Qwen task: languages %s, %d hot words (%d super), context %s",
+            parameters.get("language_hints") or "auto",
+            len(self._hotwords),
+            sum(1 for weight in self._hotwords.values() if weight == SUPER_HOTWORD),
+            json.dumps([turn["content"][0]["text"] for turn in task_input.get("context", [])], ensure_ascii=False),
+        )
         ws.send_text(json.dumps({
             "header": {"action": "run-task", "task_id": task_id, "streaming": "duplex"},
             "payload": {

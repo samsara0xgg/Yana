@@ -259,7 +259,8 @@ def test_sentences_cut_by_a_pause_keep_a_space_between_english_words():
         "现在说话声音怎么样？ok OK我先用一段时间。Sounds good. Thanks")
 
 
-def test_the_task_starts_with_his_languages_and_the_context():
+def test_the_task_starts_with_his_languages_and_the_context(caplog):
+    caplog.set_level("INFO", logger=cloud_asr.LOGGER.name)
     server = FakeServer(_start_and_finish("Jev 的工具路由。"))
     stream = cloud_asr.QwenStream("sk-test", url=server.url, languages=["zh", "en"], context_pending=True)
     stream.start()
@@ -272,6 +273,7 @@ def test_the_task_starts_with_his_languages_and_the_context():
     assert server.run_task["payload"]["parameters"]["language_hints"] == ["zh", "en"]
     assert [turn["content"][0]["text"] for turn in server.run_task["payload"]["input"]["context"]] == [
         "上次说的 Jev", "Jev 工具路由 - Claude"]
+    assert 'Qwen task: languages [\'zh\', \'en\'], 0 hot words (0 super), context ["上次说的 Jev", "Jev 工具路由 - Claude"]' in caplog.text
 
 
 def test_context_that_never_comes_does_not_hold_the_task(monkeypatch):
