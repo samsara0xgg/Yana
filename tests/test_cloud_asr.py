@@ -243,9 +243,20 @@ def test_context_keeps_the_last_five_texts_and_their_ends():
 
 
 def test_a_letter_split_off_an_english_word_is_put_back():
-    assert cloud_asr.rejoin_split_words("我在用 agen t 做路由，agen t.") == "我在用 agent 做路由，agent."
-    for kept in ("il y a un agent", "Plan B 先定", "see e.g. this", "用 C 语言", "3 x 4", "I have a dream"):
-        assert cloud_asr.rejoin_split_words(kept) == kept
+    assert cloud_asr.tidy("我在用 agen t 做路由，agen t.") == "我在用 agent 做路由，agent."
+    for kept in ("il y a un agent", "Plan B 先定", "see e.g. this", "用 C 语言", "3 x 4", "I have a dream", "okay, book it"):
+        assert cloud_asr.tidy(kept) == kept
+
+
+def test_ok_is_written_one_way_and_a_doubled_word_is_pulled_apart():
+    assert cloud_asr.tidy("ok，Ok 好的 OK。") == "OK，OK 好的 OK。"
+    assert cloud_asr.tidy("现在说话声音怎么样？okOK，我先用一段时间。") == "现在说话声音怎么样？OK OK，我先用一段时间。"
+    assert cloud_asr.tidy("yesYes byebye TikTok Jev") == "yes Yes byebye TikTok Jev"
+
+
+def test_sentences_cut_by_a_pause_keep_a_space_between_english_words():
+    assert cloud_asr.join_sentences(["现在说话声音怎么样？", "ok", "OK", "我先用一段时间。", "Sounds good.", "Thanks"]) == (
+        "现在说话声音怎么样？ok OK我先用一段时间。Sounds good. Thanks")
 
 
 def test_the_task_starts_with_his_languages_and_the_context():

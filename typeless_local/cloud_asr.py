@@ -71,6 +71,11 @@ _CJK_RE = re.compile(r"[㐀-鿿豈-﫿]")
 # A lone consonant after a word is almost never meant; vowels and y can be
 # words in French and Spanish.
 _SPLIT_LETTER_RE = re.compile(r"(?<=[A-Za-z]{2}) ([b-df-hj-np-tv-xz])(?![A-Za-z]|\.[A-Za-z])")
+_LATIN_WORD_RE = re.compile(r"[A-Za-z]{4,}")
+_LATIN_END_RE = re.compile(r"[A-Za-z0-9.,!?;:]$")
+_LATIN_START_RE = re.compile(r"[A-Za-z0-9]")
+# It writes the same "OK" as "ok", "Ok" or "OK" from one sentence to the next.
+_OK_RE = re.compile(r"(?<![A-Za-z])(?:ok|Ok|oK)(?![A-Za-z])")
 # Set once the service has refused the context or language hints and taken the task without them.
 _EXTRAS_REFUSED = threading.Event()
 
@@ -122,10 +127,32 @@ def context_messages(texts: Iterable[str]) -> list[dict]:
     return [{"role": "user", "content": [{"type": "input_text", "text": text}]} for text in kept[-MAX_CONTEXT_TEXTS:]]
 
 
-def rejoin_split_words(text: str) -> str:
-    """"agen t" -> "agent"."""
+def join_sentences(texts: Iterable[str]) -> str:
+    """Sentences end to end, with a space where English meets English: a short
+    one cut off by a pause can end without punctuation."""
 
-    return _SPLIT_LETTER_RE.sub(r"\1", text)
+    text = ""
+    for piece in (str(piece or "").strip() for piece in texts):
+        if text and piece and _LATIN_END_RE.search(text) and _LATIN_START_RE.match(piece):
+            text += " "
+        text += piece
+    return text
+
+
+def tidy(text: str) -> str:
+    """Small slips the model makes in English: "agen t" -> "agent"; a word said
+    twice glued together in two cases, "okOK" -> "ok OK"; and "ok" -> "OK", one way every time."""
+
+    text = _SPLIT_LETTER_RE.sub(r"\1", text)
+    text = _LATIN_WORD_RE.sub(_unglue, text)
+    return _OK_RE.sub("OK", text)
+
+
+def _unglue(match: re.Match) -> str:
+    word = match.group(0)
+    half = len(word) // 2
+    first, second = word[:half], word[half:]
+    return f"{first} {second}" if len(word) % 2 == 0 and first != second and first.lower() == second.lower() else word
 
 
 class QwenStream:
@@ -201,7 +228,7 @@ class QwenStream:
             return None
         sentences = [self._sentences[key] for key in sorted(self._sentences)]
         kept = drop_background(sentences, audio, self._sample_rate)
-        text = rejoin_split_words("".join(str(sentence.get("text") or "") for sentence in kept).strip())
+        text = tidy(join_sentences(str(sentence.get("text") or "") for sentence in kept))
         language = "zh" if _CJK_RE.search(text) else "en"
         return Transcript(text=text, language=language, confidence=1.0)
 
