@@ -94,6 +94,9 @@ HOLD_CONFIRM_S = 0.6
 PASTE_CHECK_S = 0.5
 # After a paste, the wait before the Return that sends it: the paste lands first.
 SEND_SETTLE_S = 0.1
+# The second tap of a double tap that finished a dictation and the paste can
+# race; deciding to send is done under this lock on both sides.
+_SEND_LOCK = threading.Lock()
 MIN_MIC_STARTUP_SECONDS = 0.75
 # A non-Chinese transcript this short is usually Whisper inventing a word over
 # noise ("you", "Bye."), but it is also how "OK" and "Yes" come out. Whisper's
@@ -1076,6 +1079,13 @@ class TypelessLocalApp:
         # the queue and look like a long press, misfiring hold-to-talk.
         now = self.hotkeys.last_primary_down_at
         self._primary_down_at = now
+        finished = getattr(self, "_finished_by_tap", None)
+        if finished is not None and 0.0 <= now - finished[0] <= DOUBLE_CLICK_SECONDS:
+            # Tapped again right after the tap that finished a dictation:
+            # send it rather than start another.
+            self._finished_by_tap = None
+            self._send_when_pasted(finished[1])
+            return
         gap = now - getattr(self, "_last_short_tap_at", 0.0)
         LOGGER.debug("HOTKEY-DEBUG primary_down now=%.3f last_short_tap=%.3f gap=%.3f state=%s mode=%s", now, getattr(self, "_last_short_tap_at", 0.0), gap, self.state, self.mode)
         # A tap cannot land before the one it follows, so a negative gap means
@@ -1096,9 +1106,8 @@ class TypelessLocalApp:
             self._start_recording("tap")
             if self.state == "recording":
                 self._arm_hold_timer(now)
-        elif self.state == "recording" and self.mode == "tap":
-            self._finish_recording()
-        elif self.state == "recording" and self.mode == "hands_free":
+        elif self.state == "recording" and self.mode in ("tap", "hands_free"):
+            self._finished_by_tap = (now, getattr(self, "_active_session_id", 0))
             self._finish_recording()
 
     def _on_hold_start(self) -> None:
@@ -2187,11 +2196,27 @@ class TypelessLocalApp:
         self._maybe_send(fallback, landed=False)
 
     def _maybe_send(self, fallback: str, landed: bool = True) -> None:
-        """Press Return after the paste when this dictation was finished with Enter."""
+        """Press Return after the paste when this dictation was finished with Enter or a double tap."""
 
-        sid = getattr(self, "_send_session", None)
-        if sid is None:
-            return
+        with _SEND_LOCK:
+            self._delivered = (getattr(self, "_active_session_id", 0), landed, fallback)
+            sid, self._send_session = getattr(self, "_send_session", None), None
+        if sid is not None:
+            self._send(sid, landed, fallback)
+
+    def _send_when_pasted(self, sid: int) -> None:
+        """Send dictation ``sid`` with Return: after its paste, or now if it is already pasted."""
+
+        with _SEND_LOCK:
+            delivered = getattr(self, "_delivered", None)
+            if delivered is None or delivered[0] != sid:
+                LOGGER.info("Double tap: sending once the text is pasted")
+                self._send_session = sid
+                return
+        LOGGER.info("Double tap after the paste: sending now")
+        self._send(sid, delivered[1], delivered[2])
+
+    def _send(self, sid: int, landed: bool, fallback: str) -> None:
         if not landed:
             LOGGER.info("Not sending with Return: the text did not land in a field")
         elif sid != getattr(self, "_active_session_id", 0):
@@ -2201,7 +2226,6 @@ class TypelessLocalApp:
         else:
             LOGGER.info("Sending with Return after the paste")
             threading.Timer(SEND_SETTLE_S, self._press_return, args=(sid,)).start()
-        self._send_session = None
 
     def _press_return(self, sid: int) -> None:
         with self._lock:

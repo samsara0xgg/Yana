@@ -118,6 +118,8 @@ function keys() {
   return head(paneTitle('keys')) + kb
     + grp([
       row(L('开始 / 结束', 'Start / finish'), `<span class="kbd2"><span class="arrow">${L('轻点', 'tap')}</span>${key}</span>`),
+      row(L('结束并发送', 'Finish and send'), `<span class="kbd2"><span class="arrow">${L('录音时连点两下', 'double-tap while recording')}</span>${key}</span>`,
+        L('第一下结束并粘贴，第二下替你按回车发出去。录音时直接按回车也一样。', 'The first tap finishes and pastes; the second presses Return to send it. Pressing Return while recording does the same.')),
       row(L('按住说话', 'Hold to talk'), `<span class="kbd2"><span class="arrow">${L('按住', 'hold')}</span>${key}</span>`, L('按住一会儿就开始录，松开就完成。', 'Recording starts after a moment; letting go finishes.')),
       row(L('锁定（免手持）', 'Lock (hands-free)'), `<span class="kbd2"><span class="arrow">${L('连点两下', 'double-tap')}</span>${key}${lock}</span>`,
         rc ? L('录音时按右 ⌘ + 空格也能锁定。', 'While recording, right ⌘ + Space also locks it.') : ''),

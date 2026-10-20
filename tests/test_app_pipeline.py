@@ -2229,3 +2229,51 @@ def test_whisper_hears_the_whole_recording_when_qwen_fails(monkeypatch) -> None:
     (heard,) = app.asr.calls
     assert heard.size == 16000
     assert app.refiner.calls == [("whisper words", context)]
+
+
+def _finish_with_a_tap_then_tap_again(monkeypatch, app, hotkeys, clock, second_at: float) -> None:
+    clock[0] = hotkeys.last_primary_down_at = 40.0
+    app._on_hotkey("primary_down")
+    clock[0] = hotkeys.last_primary_up_at = 40.1
+    app._on_hotkey("primary_up")
+    clock[0] = hotkeys.last_primary_down_at = 45.0
+    app._on_hotkey("primary_down")  # finishes the dictation
+    clock[0] = hotkeys.last_primary_up_at = 45.08
+    app._on_hotkey("primary_up")
+    clock[0] = hotkeys.last_primary_down_at = second_at
+    app._on_hotkey("primary_down")
+
+
+def test_double_tap_to_finish_sends_once_pasted_and_starts_nothing(monkeypatch) -> None:
+    app, hotkeys, clock = _hotkey_app(monkeypatch)
+    _finish_with_a_tap_then_tap_again(monkeypatch, app, hotkeys, clock, 45.25)
+
+    assert app.state == "processing"
+    assert len(app.executor.submissions) == 1
+    assert app._send_session == app._active_session_id
+
+
+def test_a_late_second_tap_does_not_send(monkeypatch) -> None:
+    app, hotkeys, clock = _hotkey_app(monkeypatch)
+    _finish_with_a_tap_then_tap_again(monkeypatch, app, hotkeys, clock, 46.0)
+
+    assert app._send_session is None
+    assert len(app.executor.submissions) == 1
+
+
+def test_second_tap_after_the_paste_sends_right_away(monkeypatch) -> None:
+    app, returns = _send_app(monkeypatch)
+    app._send_session = None
+    _deliver(app)
+    assert returns == []
+
+    app._send_when_pasted(3)
+    assert returns == ["return"]
+
+
+def test_second_tap_after_a_raw_fallback_paste_does_not_send(monkeypatch) -> None:
+    app, returns = _send_app(monkeypatch)
+    app._send_session = None
+    _deliver(app, "net")
+    app._send_when_pasted(3)
+    assert returns == []
