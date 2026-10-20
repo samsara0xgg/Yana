@@ -492,6 +492,44 @@ def test_recording_ducks_system_audio_until_finish(monkeypatch) -> None:
     assert app.overlay.shown() == ["starting", "rec", "transcribing"]
 
 
+def test_with_headphones_on_nothing_is_muted_or_paused(monkeypatch) -> None:
+    monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("TextEdit", "Untitled"))
+    monkeypatch.setattr(app_module.devices, "output_is_headphones", lambda: True)
+    paused = []
+    app = _recording_app()
+    app._pause_media = lambda: paused.append("pause")
+
+    app._start_recording("tap")
+    assert app._ducked is False
+    app._finish_recording()
+
+    assert app.audio_ducker.calls == ["restore_all"] and paused == []
+
+
+def test_a_missing_mic_falls_back_to_the_macs_own_rather_than_a_bluetooth_headsets(monkeypatch) -> None:
+    indexes = {"reSpeaker": None, "MacBook Pro Microphone": 3, "AirPods Pro": 5}
+    default = {"name": "AirPods Pro", "bluetooth": True, "built_in": "MacBook Pro Microphone"}
+    monkeypatch.setattr(app_module.devices, "resolve_input_index", lambda name: indexes.get(name))
+    monkeypatch.setattr(app_module.devices, "current_input_device", lambda: default["name"])
+    monkeypatch.setattr(app_module.devices, "default_input_is_bluetooth", lambda: default["bluetooth"])
+    monkeypatch.setattr(app_module.devices, "built_in_input", lambda: default["built_in"])
+    app = _recording_app()
+
+    def capture(chosen: str) -> tuple[str, int | None]:
+        app.config = SimpleNamespace(input_device=chosen)
+        return app._resolve_capture_device(), app.recorder.device
+
+    assert capture("reSpeaker") == ("MacBook Pro Microphone", 3)
+    assert capture("") == ("MacBook Pro Microphone", 3)
+    assert capture("AirPods Pro") == ("AirPods Pro", 5)  # chosen by name: kept
+    indexes["reSpeaker"] = 7
+    assert capture("reSpeaker") == ("reSpeaker", 7)
+    default["built_in"] = ""  # a Mac mini
+    assert capture("") == ("AirPods Pro", None)
+    default.update(name="USB Mic", bluetooth=False, built_in="MacBook Pro Microphone")
+    assert capture("") == ("USB Mic", None)
+
+
 def test_qwen_starts_with_his_words_and_languages_then_reads_the_focused_app(monkeypatch) -> None:
     monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("Claude", "Jev 工具路由"))
     monkeypatch.setattr(app_module.languages, "known", lambda: True)

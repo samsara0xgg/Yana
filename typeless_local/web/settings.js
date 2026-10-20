@@ -203,12 +203,12 @@ function audio() {
   if (S.input && !S.inputs.includes(S.input)) inputs.push([S.input, L(`${S.input}（未连接）`, `${S.input} (not connected)`)]);
   return head(paneTitle('audio'))
     + grp([row(L('输入设备', 'Input device'), select('input', S.input, inputs, L('输入设备', 'Input device')),
-      L('每次录音都会重新读取设备；选中的设备不在时用系统默认。', 'Read again for every recording; when the chosen device is missing, the system default is used.'))])
+      L('每次录音都会重新读取设备；选中的设备不在时用系统默认。系统默认是蓝牙耳机的麦克风时，改用 Mac 自带的，耳机里的声音不会断。', 'Read again for every recording; when the chosen device is missing, the system default is used. If that is a Bluetooth headset\'s mic, the Mac\'s own mic is used instead, so what plays in the headset doesn\'t cut out.'))])
     + grp([
       row(L('录音时静音其他声音', 'Mute other sound while recording'), sw('duck', S.duck, L('录音时静音其他声音', 'Mute other sound while recording')),
         S.duckUnsupported
           ? L('现在的音箱不让系统调音量，所以没法静音它；正在放的音乐仍会暂停。', 'The current speaker has no volume the system can lower, so it cannot be muted; playing music is still paused.')
-          : L('使用带回声消除的耳机时自动跳过。录音结束或意外退出后都会恢复。', 'Skipped with an echo-cancelling headset. Sound comes back when recording ends, even after a crash.')),
+          : L('声音在耳机里或用带回声消除的耳机麦时自动跳过。录音结束或意外退出后都会恢复。', 'Skipped while sound plays in headphones or with an echo-cancelling headset. Sound comes back when recording ends, even after a crash.')),
       row(L('静音时在胶囊里提示', 'Show when muted'), sw('show_ducked', S.prefs.show_ducked, L('静音时在胶囊里提示', 'Show when muted')),
         L('显示一个小喇叭斜杠，让你知道音乐停了是谁干的。', 'A small crossed-out speaker, so you know why the music stopped.')),
     ]);

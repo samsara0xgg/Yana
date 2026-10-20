@@ -181,13 +181,112 @@ def hardware_signature() -> tuple | None:
     return parts
 
 
-def _read_u32(lib: Any, obj: int, selector: str) -> int | None:  # noqa: ANN401
-    address = _PropertyAddress(_fourcc(selector), _SCOPE_GLOBAL, _ELEMENT_MAIN)
+def _read_u32(lib: Any, obj: int, selector: str, scope: int = _SCOPE_GLOBAL) -> int | None:  # noqa: ANN401
+    address = _PropertyAddress(_fourcc(selector), scope, _ELEMENT_MAIN)
     value = ctypes.c_uint32(0)
     size = ctypes.c_uint32(4)
     if lib.AudioObjectGetPropertyData(obj, ctypes.byref(address), 0, None, ctypes.byref(size), ctypes.byref(value)):
         return None
     return value.value
+
+
+_SCOPE_INPUT = _fourcc("inpt")
+_SCOPE_OUTPUT = _fourcc("outp")
+_BLUETOOTH = frozenset({_fourcc("blue"), _fourcc("blea")})  # kAudioDeviceTransportTypeBluetooth(LE)
+_BUILT_IN = _fourcc("bltn")
+_HEADPHONE_JACK = _fourcc("hdpn")  # the built-in output's data source with headphones plugged in
+_UTF8 = 0x08000100  # kCFStringEncodingUTF8
+_corefoundation: Any = None
+
+
+def _has_streams(lib: Any, device: int, scope: int) -> bool:  # noqa: ANN401
+    address = _PropertyAddress(_fourcc("stm#"), scope, _ELEMENT_MAIN)
+    size = ctypes.c_uint32(0)
+    if lib.AudioObjectGetPropertyDataSize(device, ctypes.byref(address), 0, None, ctypes.byref(size)):
+        return False
+    return size.value > 0
+
+
+def _device_name(lib: Any, device: int) -> str:  # noqa: ANN401
+    """The name PortAudio lists the device under (kAudioObjectPropertyName)."""
+
+    global _corefoundation
+    address = _PropertyAddress(_fourcc("lnam"), _SCOPE_GLOBAL, _ELEMENT_MAIN)
+    ref = ctypes.c_void_p()
+    size = ctypes.c_uint32(ctypes.sizeof(ref))
+    if lib.AudioObjectGetPropertyData(device, ctypes.byref(address), 0, None, ctypes.byref(size), ctypes.byref(ref)):
+        return ""
+    if not ref.value:
+        return ""
+    if _corefoundation is None:
+        cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+        cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+        cf.CFStringGetCString.restype = ctypes.c_bool
+        cf.CFRelease.argtypes = [ctypes.c_void_p]
+        _corefoundation = cf
+    buffer = ctypes.create_string_buffer(512)
+    try:
+        ok = _corefoundation.CFStringGetCString(ref, buffer, len(buffer), _UTF8)
+    finally:
+        _corefoundation.CFRelease(ref)
+    return buffer.value.decode("utf-8", "replace").strip() if ok else ""
+
+
+def default_input_is_bluetooth() -> bool:
+    """Whether the system's default mic belongs to a Bluetooth headset.
+
+    Opening that mic switches the headset from music to call mode: whatever is
+    playing cuts out, then comes back at phone quality until the mic closes.
+    """
+
+    lib = _load_coreaudio()
+    if lib is None:
+        return False
+    try:
+        device = _read_u32(lib, _SYSTEM_OBJECT, "dIn ")
+        return bool(device) and _read_u32(lib, device, "tran") in _BLUETOOTH
+    except Exception:
+        LOGGER.debug("Unable to read the default input's transport", exc_info=True)
+        return False
+
+
+def built_in_input() -> str:
+    """The Mac's own microphone by name, or "" on a Mac without one."""
+
+    lib = _load_coreaudio()
+    if lib is None:
+        return ""
+    try:
+        for device in _read_object_ids(lib, _fourcc("dev#")) or ():
+            if _read_u32(lib, device, "tran") == _BUILT_IN and _has_streams(lib, device, _SCOPE_INPUT):
+                return _device_name(lib, device)
+    except Exception:
+        LOGGER.debug("Unable to find the built-in microphone", exc_info=True)
+    return ""
+
+
+def output_is_headphones() -> bool:
+    """Whether the system plays into someone's ears, where no mic can hear it.
+
+    Bluetooth output counts as headphones: CoreAudio can't tell a Bluetooth
+    speaker from a headset, and on a Mac it is nearly always a headset. Wired
+    ones show up as the built-in output with its headphone data source.
+    """
+
+    lib = _load_coreaudio()
+    if lib is None:
+        return False
+    try:
+        device = _read_u32(lib, _SYSTEM_OBJECT, "dOut")
+        if not device:
+            return False
+        transport = _read_u32(lib, device, "tran")
+        if transport in _BLUETOOTH:
+            return True
+        return transport == _BUILT_IN and _read_u32(lib, device, "ssrc", _SCOPE_OUTPUT) == _HEADPHONE_JACK
+    except Exception:
+        LOGGER.debug("Unable to read the default output's transport", exc_info=True)
+        return False
 
 
 # Calls hold output open all through a meeting and ignore the play/pause key,

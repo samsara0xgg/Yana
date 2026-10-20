@@ -309,15 +309,29 @@ class TypelessLocalApp:
     def _resolve_capture_device(self) -> str:
         preferred = getattr(self.config, "input_device", "")
         index = devices.resolve_input_index(preferred)
+        capture = preferred
+        if index is None:
+            capture = devices.current_input_device()
+            # A Bluetooth headset's mic puts the headset in call mode while it is
+            # open: the music cuts out and comes back at phone quality. The Mac's
+            # own mic hears just as well at the desk, and with the sound in the
+            # headset it has no echo to pick up. A headset chosen by name is kept.
+            built_in = devices.built_in_input() if devices.default_input_is_bluetooth() else ""
+            built_in_index = devices.resolve_input_index(built_in) if built_in else None
+            if built_in_index is not None:
+                if built_in != getattr(self, "_capture_device", ""):
+                    LOGGER.info("Recording with %s, not %s: a Bluetooth mic drops the headset to call quality", built_in, capture)
+                index, capture = built_in_index, built_in
         recorder = getattr(self, "recorder", None)
         if recorder is not None:
             recorder.device = index
-        return preferred if index is not None else devices.current_input_device()
+        return capture
 
     def _speakers_need_ducking(self, capture: str) -> bool:
         """Whether the speakers must be silenced for this capture to stay clean.
 
-        A capture device with hardware echo cancellation already removes what the
+        Headphones need nothing: what they play never reaches the mic. A capture
+        device with hardware echo cancellation already removes what the
         speakers play, but only while it is fed the same signal they get, so the
         answer depends on the input and output pairing rather than on the mic
         alone. Anything unrecognised ducks, which is the behaviour that was there
@@ -327,6 +341,9 @@ class TypelessLocalApp:
         """
 
         playback = devices.current_output_device()
+        if devices.output_is_headphones():
+            LOGGER.info("Leaving system audio up: %s plays into headphones", playback)
+            return False
         pairs = list(getattr(self.config, "aec_pairs", ()) or ())
         # The paired mic cancels the speakers only on its first channel.
         if not getattr(self.config, "input_channel", 0) and devices.has_hardware_aec(capture, playback, pairs):
