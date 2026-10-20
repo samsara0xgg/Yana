@@ -177,3 +177,14 @@ def test_whisper_terms_rank_fixes_then_use_then_recency(tmp_path: Path) -> None:
     assert vocab.learn_term(path, "jarvis", "Java")  # a hand-added word fixed by hand counts too
     assert vocab.load_user_terms(path) == ["Jarvis", "Typlus", "merge", "Jev"]
     assert [(e["term"], e["n"]) for e in vocab._load_sections(path)["learned"]] == [("Jev", 1), ("merge", 2), ("Jarvis", 1)]
+
+
+def test_hotword_weights_favour_words_fixed_by_hand(tmp_path: Path) -> None:
+    path = tmp_path / "vocab.yaml"
+    vocab.save_user_terms(path, ["Jarvis"])
+    vocab.save_auto_terms(path, ["PyObjC"])
+    vocab.learn_term(path, "merge", "默制")
+    vocab.learn_term(path, "Jev", "Jeff")
+    vocab.learn_term(path, "Jev", "Java")
+
+    assert vocab.hotword_weights(path) == {"PyObjC": 3, "Jarvis": 4, "merge": 5, "Jev": 50}

@@ -262,7 +262,8 @@ function usage() {
 }
 
 function privacy() {
-  const p = S.prefs, c = UI.confirm;
+  const p = S.prefs, c = UI.confirm, qwen = p.asr_engine !== 'local';
+  const toQwen = qwen ? L('选了千问时也发给千问，帮它认对词。', ' With Qwen chosen it also goes to Qwen, to help it hear the right words.') : '';
   const confirmBox = !c ? '' : c.kind === 'days'
     ? `<div class="confirm"><span>${c.n ? L(`会删除 ${c.n} 条 ${esc(DAYS(c.days))}以前的听写。`, `This deletes ${c.n} dictation${c.n === 1 ? '' : 's'} older than ${esc(DAYS(c.days))}.`) : L(`以后只保留最近 ${esc(DAYS(c.days))}。`, `From now on only the last ${esc(DAYS(c.days))} are kept.`)}</span><button class="mbtn" data-act="cancelconfirm">${L('取消', 'Cancel')}</button><button class="mbtn pri" data-act="confirmdays">${c.n ? L('删除并保留', 'Delete and Keep') : L('好', 'OK')}</button></div>`
     : `<div class="confirm"><span>${c.n ? L(`删除全部 ${c.n} 条听写历史？不能撤销。`, `Delete all ${c.n} dictations from the history? This can't be undone.`) : L('现在没有听写历史。', 'There is no dictation history.')}</span><button class="mbtn" data-act="cancelconfirm">${L('取消', 'Cancel')}</button>${c.n ? `<button class="mbtn pri" data-act="confirmclear">${L('全部删除', 'Delete All')}</button>` : ''}</div>`;
@@ -278,18 +279,18 @@ function privacy() {
         L('插入后你手动改过再发送的，会把最后发出去的文字存在这条历史旁边，方便对照。只看刚插入的那个输入框，文档类的大段内容不记。',
           'If you edit the text after it is inserted and then send it, what you sent is kept next to it in the history. Only the field it went into is watched, and long documents are skipped.')),
     ], c && c.kind === 'days' ? confirmBox : '')
-    + `<div class="grp-l">${L('发送给润色模型的内容', 'What the refinement model receives')}</div>`
+    + `<div class="grp-l">${qwen ? L('发送给润色模型和千问的内容', 'What the refinement model and Qwen receive') : L('发送给润色模型的内容', 'What the refinement model receives')}</div>`
     + grp([
       row(L('原始转写文字', 'The raw transcript'), `<span class="st-ok">${L('发送', 'Sent')}</span>`),
       row(L('当前 App 名称和窗口标题', 'App name and window title'), sw('send_window_title', p.send_window_title, L('发送窗口标题', 'Send the window title')),
-        L('用来判断语气。窗口标题可能包含文件名或邮件主题。', 'Used to judge the tone. A window title can contain a file name or an email subject.')),
+        L('用来判断语气。窗口标题可能包含文件名或邮件主题。', 'Used to judge the tone. A window title can contain a file name or an email subject.') + toQwen),
       row(L('光标前的文字', 'Text before the cursor'), sw('send_before_text', p.send_before_text, L('发送光标前的文字', 'Send the text before the cursor')),
         L('最多约 300 字，用来按上文写对人名、术语和同音字。会多花一点费用和时间，默认关闭；密码框从不读取。',
-          'Up to about 300 characters, to get names, terms and homophones right from context. Costs a little more time and money, so it is off by default; password fields are never read.')),
+          'Up to about 300 characters, to get names, terms and homophones right from context. Costs a little more time and money, so it is off by default; password fields are never read.') + toQwen),
       row(L('所选文字', 'The selected text'), sw('rewrite_selection', p.rewrite_selection, L('发送所选文字', 'Send the selected text')), L('只在“改写所选文字”时发送。', 'Only when rewriting the selection.')),
-      row(L('音频', 'Audio'), p.asr_engine !== 'local'
+      row(L('音频', 'Audio'), qwen
         ? `<span class="val">${L('发给阿里云识别', 'Sent to Alibaba Cloud')}</span>` : `<span class="val">${L('从不离开这台 Mac', 'Never leaves this Mac')}</span>`,
-        p.asr_engine !== 'local' ? L('语音识别选了千问：录音时音频边说边传到阿里云新加坡，只用来识别。', 'Speech recognition is set to Qwen: audio streams to Alibaba Cloud in Singapore while you talk, only to be recognized.') : ''),
+        qwen ? L('语音识别选了千问：录音时音频边说边传到阿里云新加坡，只用来识别。', 'Speech recognition is set to Qwen: audio streams to Alibaba Cloud in Singapore while you talk, only to be recognized.') : ''),
     ])
     + grp([
       row(L('发送匿名使用统计', 'Send anonymous usage stats'), sw('send_usage_stats', p.send_usage_stats, L('发送匿名使用统计', 'Send anonymous usage stats')),

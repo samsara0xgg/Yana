@@ -89,6 +89,22 @@ def whisper_terms(path: Path, uses: dict[str, int] | None = None) -> list[str]:
     return sorted(newest, key=lambda term: -(FIX_WEIGHT * learned.get(term, (0, -1))[0] + uses.get(term, 0)))
 
 
+# Qwen's hot word weights: picked up on their own < kept by hand < fixed by hand
+# once; fixed twice or more, a word he keeps being misheard on, is a "super" hot word.
+AUTO_HOTWORD, USER_HOTWORD, FIXED_HOTWORD, SUPER_HOTWORD = 3, 4, 5, 50
+
+
+def hotword_weights(path: Path) -> dict[str, int]:
+    """How much each term should pull Qwen's recognition toward it."""
+
+    sections = _load_sections(Path(path))
+    weights = dict.fromkeys(sections["auto"], AUTO_HOTWORD)
+    weights.update(dict.fromkeys(sections["user"], USER_HOTWORD))
+    for entry in sections["learned"]:
+        weights[entry["term"]] = SUPER_HOTWORD if entry["n"] >= 2 else FIXED_HOTWORD
+    return weights
+
+
 def load_rejected(path: Path) -> list[str]:
     """Return the case-preserved list of terms the extractor must skip."""
 

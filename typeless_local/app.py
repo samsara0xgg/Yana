@@ -4,6 +4,7 @@ capsule, and the text going into the focused app."""
 from __future__ import annotations
 
 import atexit
+from collections import deque
 import dataclasses
 import json
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -75,7 +76,7 @@ from typeless_local.preferences import Preferences, load_preferences, save_prefe
 from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner, TrialUnavailable
 from typeless_local.stats import DailyStats
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
-from typeless_local.vocab import as_initial_prompt, learn_term, load_user_terms, load_vocab, whisper_terms, write_starter_file
+from typeless_local.vocab import as_initial_prompt, hotword_weights, learn_term, load_user_terms, load_vocab, whisper_terms, write_starter_file
 from typeless_local.windows import Windows, install_main_menu, learned_fixes, prices
 
 LOGGER = logging.getLogger(__name__)
@@ -120,6 +121,9 @@ STATS_EVERY_S = 6 * 3600.0
 EXTEND_RECORDING_S = 15 * 60.0
 # Between taking the old text back and pasting the new one.
 UNDO_SETTLE_S = 0.15
+# Qwen's context: what it heard in the same app this recently, up to this many dictations.
+QWEN_CONTEXT_S = 30 * 60.0
+QWEN_CONTEXT_DICTATIONS = 3
 _DEFAULT_PREFERENCES = Preferences()
 # What the capsule says went wrong, by the step that failed.
 _FAILED_STEP = {
@@ -157,12 +161,14 @@ class TypelessLocalApp:
             write_starter_file(user_paths.vocab_path)
             self.vocab = load_vocab(user_paths.vocab_path)
             self.whisper_prompt = self._whisper_prompt(user_paths)
+            self.hotword_weights = hotword_weights(user_paths.vocab_path)
             self.trace = DictationTrace(user_paths.trace_db_path)
             self.daily_stats = DailyStats(user_paths.config_dir / "stats.json", app_version())
         else:
             self.daily_stats = None
             self.vocab = []
             self.whisper_prompt = ""
+            self.hotword_weights = {}
             self.trace = None
         self.prefs = load_preferences(user_paths)
         self._trial_over = self.prefs.trial_used_up
@@ -235,6 +241,8 @@ class TypelessLocalApp:
         self._stretches: list[Future[Transcript]] = []
         # This dictation's stream to Qwen when that is the recognizer; None means Whisper.
         self._cloud: cloud_asr.QwenStream | None = None
+        # What Qwen heard lately, and in which app: context for the next dictation there.
+        self._qwen_heard: deque[Recent] = deque(maxlen=20)
         self._capture_device = ""
         self._ducked = False
         self._insertion: Insertion | None = None
@@ -274,6 +282,7 @@ class TypelessLocalApp:
             return
         self.vocab = load_vocab(user_paths.vocab_path)
         self.whisper_prompt = self._whisper_prompt(user_paths)
+        self.hotword_weights = hotword_weights(user_paths.vocab_path)
         LOGGER.info("Reloaded vocab: %d terms", len(self.vocab))
 
     @staticmethod
@@ -1533,6 +1542,8 @@ class TypelessLocalApp:
             return
         self._capture_device = capture
         self.focus_context = capture_focus_context(read_before_text=self.prefs.send_before_text)
+        if self._cloud is not None:
+            self._cloud.give_context(self._qwen_context(self.focus_context))
         if caret:
             self.capsule.set_anchor("caret", caret_rect())
         self._ducked = False
@@ -1562,9 +1573,44 @@ class TypelessLocalApp:
                 getattr(self, "vocab", []) or [],
                 int(getattr(self.config, "sample_rate", 16000)),
                 model=cloud_asr.MESSAGE_MODEL if engine == "qwen_message" else cloud_asr.MODEL,
+                weights=getattr(self, "hotword_weights", None),
+                languages=self._qwen_languages(),
+                context_pending=True,
             )
         self.recorder.on_chunk = stream.feed if stream is not None else None
         return stream
+
+    def _qwen_languages(self) -> list[str]:
+        """The spoken language when one is chosen; on Automatic all of his. None
+        until the Mac's own are read: English alone would have Qwen hear Chinese as English."""
+
+        spoken = str((getattr(getattr(self, "asr", None), "_asr_config", None) or {}).get("language") or "")
+        if spoken:
+            return [spoken]
+        return sorted(self._allowed_languages()) if languages.known() else []
+
+    def _qwen_context(self, context: FocusContext) -> list[str]:
+        """What Qwen reads before it hears him, oldest first: what it heard in this
+        app lately, then the window title and the text before the caret as the
+        privacy settings allow. It leans toward words it has seen there."""
+
+        try:
+            prefs = self.prefs
+            before = str(context.before_text or "") if prefs.send_before_text else ""
+            now = time.time()
+            texts = [
+                heard.text
+                for heard in tuple(getattr(self, "_qwen_heard", ()))  # a copy: the worker may be adding one
+                if heard.app == context.app_name and now - heard.at <= QWEN_CONTEXT_S and heard.text not in before
+            ][-QWEN_CONTEXT_DICTATIONS:]
+            if prefs.send_window_title and context.window_title:
+                texts.append(str(context.window_title))
+            if before:
+                texts.append(before)
+            return texts
+        except Exception:
+            LOGGER.debug("Could not gather Qwen's context", exc_info=True)
+            return []
 
     def _close_cloud_stream(self) -> cloud_asr.QwenStream | None:
         """Unhook this dictation's stream from the microphone and hand it over."""
@@ -2012,6 +2058,9 @@ class TypelessLocalApp:
             transcript = cloud.finish(audio) if cloud is not None else None
             if transcript is not None:
                 record.asr_model = cloud.model
+                heard = getattr(self, "_qwen_heard", None)
+                if heard is not None and transcript.text:
+                    heard.append(Recent(text=transcript.text, app=context.app_name, at=time.time()))
             elif cloud is not None:
                 transcript = self._whisper(audio)  # no stretches were heard while Qwen was listening
             else:

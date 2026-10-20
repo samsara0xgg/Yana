@@ -96,6 +96,12 @@ def load_system() -> frozenset[str]:
     return _system
 
 
+def known() -> bool:
+    """Whether the Mac's own languages have been read yet."""
+
+    return _system is not None
+
+
 def allowed(heard: Iterable[str] = ()) -> set[str]:
     """System languages, learned ones, and English. Until the system set is read, just the rest."""
 

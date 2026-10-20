@@ -6,6 +6,7 @@ import struct
 import threading
 
 import numpy as np
+import pytest
 
 from typeless_local import cloud_asr
 
@@ -22,10 +23,12 @@ def _frame(opcode: int, payload: bytes) -> bytes:
 
 
 class FakeServer:
-    """Speaks just enough of the run-task protocol; ``script`` decides how it answers."""
+    """Speaks just enough of the run-task protocol; ``script`` decides how it answers.
 
-    def __init__(self, script) -> None:
-        self.script = script
+    Given several scripts it takes as many connections, one script each."""
+
+    def __init__(self, *scripts) -> None:
+        self.scripts = scripts
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen(1)
@@ -36,15 +39,16 @@ class FakeServer:
         threading.Thread(target=self._serve, daemon=True).start()
 
     def _serve(self) -> None:
-        conn, _ = self.listener.accept()
-        self.conn = conn
-        request = b""
-        while b"\r\n\r\n" not in request:
-            request += conn.recv(4096)
-        self.headers = request.decode()
-        conn.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
-        self.buffer = b""
-        self.script(self)
+        for script in self.scripts:
+            conn, _ = self.listener.accept()
+            self.conn = conn
+            request = b""
+            while b"\r\n\r\n" not in request:
+                request += conn.recv(4096)
+            self.headers = request.decode()
+            conn.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+            self.buffer = b""
+            script(self)
 
     def read(self) -> tuple[int, bytes]:
         def exact(n: int) -> bytes:
@@ -205,3 +209,99 @@ def test_the_voice_input_model_polishes():
     assert server.run_task["payload"]["model"] == "qwen-audio-3.1-asr-flash-message"
     assert params["disfluency_removal_enabled"] is True
     assert result is not None and result.text == "专门开个 session。先定了。"
+
+
+@pytest.fixture(autouse=True)
+def _extras_welcome(monkeypatch):
+    """Each test starts as if the service had never refused the context or hints."""
+
+    monkeypatch.setattr(cloud_asr, "_EXTRAS_REFUSED", threading.Event())
+
+
+def test_hot_words_weigh_what_he_fixed_and_cap_the_super_ones():
+    weights = {f"w{i}": 50 for i in range(51)} | {"auto": 3, "odd": 9}
+    words = cloud_asr.hotwords(["auto", "odd", "plain"] + [f"w{i}" for i in range(51)], weights)
+
+    assert list(words)[:50] == [f"w{i}" for i in range(50)]  # heaviest first
+    assert sum(1 for weight in words.values() if weight == 50) == 50
+    assert words["w50"] == 5 and words["odd"] == 5 and words["plain"] == 4 and words["auto"] == 3
+
+
+def test_language_hints_only_when_they_cover_every_language_he_speaks():
+    assert cloud_asr.language_hints(["zh", "en", "zh"]) == ["zh", "en"]
+    assert cloud_asr.language_hints(["zh", "en", "fr", "de", "ja"]) == []  # one would be left out
+    assert cloud_asr.language_hints(["zh", "yue"]) == []  # Cantonese is no hint the model takes
+    assert cloud_asr.language_hints([]) == []
+
+
+def test_context_keeps_the_last_five_texts_and_their_ends():
+    turns = cloud_asr.context_messages(["", "old"] + ["x" * 390 + "末尾" * 10] + ["b", "c", "d", "e"])
+
+    assert [turn["content"][0]["text"] for turn in turns][1:] == ["b", "c", "d", "e"]
+    assert turns[0]["content"][0]["text"].endswith("末尾") and len(turns[0]["content"][0]["text"]) == 400
+    assert all(turn["role"] == "user" and turn["content"][0]["type"] == "input_text" for turn in turns)
+
+
+def test_a_letter_split_off_an_english_word_is_put_back():
+    assert cloud_asr.rejoin_split_words("我在用 agen t 做路由，agen t.") == "我在用 agent 做路由，agent."
+    for kept in ("il y a un agent", "Plan B 先定", "see e.g. this", "用 C 语言", "3 x 4", "I have a dream"):
+        assert cloud_asr.rejoin_split_words(kept) == kept
+
+
+def test_the_task_starts_with_his_languages_and_the_context():
+    server = FakeServer(_start_and_finish("Jev 的工具路由。"))
+    stream = cloud_asr.QwenStream("sk-test", url=server.url, languages=["zh", "en"], context_pending=True)
+    stream.start()
+    stream.give_context(["上次说的 Jev", "Jev 工具路由 - Claude"])
+    audio = _speech(1.0, 0.3)
+    stream.feed(audio)
+    result = stream.finish(audio, timeout=5)
+
+    assert result is not None and result.text == "Jev 的工具路由。"
+    assert server.run_task["payload"]["parameters"]["language_hints"] == ["zh", "en"]
+    assert [turn["content"][0]["text"] for turn in server.run_task["payload"]["input"]["context"]] == [
+        "上次说的 Jev", "Jev 工具路由 - Claude"]
+
+
+def test_context_that_never_comes_does_not_hold_the_task(monkeypatch):
+    monkeypatch.setattr(cloud_asr, "CONTEXT_WAIT_S", 0.05)
+    server = FakeServer(_start_and_finish("好的。"))
+    stream = cloud_asr.QwenStream("sk-test", url=server.url, context_pending=True)
+    stream.start()
+    audio = _speech(1.0, 0.3)
+    stream.feed(audio)
+
+    result = stream.finish(audio, timeout=5)
+
+    assert result is not None and result.text == "好的。"
+    assert server.run_task["payload"]["input"] == {}
+
+
+def test_a_refused_context_starts_again_without_it_and_is_left_out_after():
+    def refuse(server: FakeServer) -> None:
+        _, payload = server.read()
+        server.refused = json.loads(payload)
+        server.event("task-failed", error_code="InvalidParameter", error_message="context")
+
+    server = FakeServer(refuse, _start_and_finish("好的。"))
+    stream = cloud_asr.QwenStream("sk-test", url=server.url, languages=["zh"], context_pending=True)
+    stream.start()
+    stream.give_context(["窗口"])
+    audio = _speech(1.0, 0.3)
+    stream.feed(audio)
+    result = stream.finish(audio, timeout=5)
+
+    assert server.refused["payload"]["input"]["context"]
+    assert result is not None and result.text == "好的。"
+    assert server.run_task["payload"]["input"] == {} and "language_hints" not in server.run_task["payload"]["parameters"]
+    assert len(server.audio) == audio.size * 2  # nothing lost while it started again
+    assert cloud_asr._EXTRAS_REFUSED.is_set()
+
+
+def _start_and_finish(text: str):
+    def script(server: FakeServer) -> None:
+        _start_and_collect(server)
+        server.sentence(1, text, 0, 1000)
+        server.event("task-finished")
+
+    return script

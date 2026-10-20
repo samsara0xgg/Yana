@@ -3,8 +3,9 @@
 Audio goes up in 0.1 s frames from the moment the microphone opens, so when he
 lets go only the last sentence is left to finish (0.69 s median on 100 of the
 user's dictations, against 2.3 s for the same model on the whole clip). The
-model returns punctuated, nearly verbatim text and takes the word list as hot
-words.
+model returns punctuated, nearly verbatim text. Three things steer it toward
+his words: the word list as hot words (the ones he has fixed by hand weighted
+most), the languages he speaks, and a little context read from the focused app.
 
 Anything that goes wrong (no key, no network, a failed task, no answer in
 time) returns None, and the caller hears the recording with Whisper instead.
@@ -27,6 +28,7 @@ import ssl
 import struct
 import threading
 import uuid
+from typing import Iterable
 from urllib.parse import urlsplit
 
 import numpy as np
@@ -49,34 +51,81 @@ FINISH_TIMEOUT_S = 4.0
 FRAME_SECONDS = 0.1
 HOTWORD_WEIGHT = 4
 MAX_HOTWORDS = 2000
+# Weights run 1-5; 50 marks a "super" hot word the model leans on much harder, at most 50 of them.
+SUPER_HOTWORD = 50
+MAX_SUPER_HOTWORDS = 50
+# Codes the model takes as language hints, at most four. A hint rules out the
+# rest, so hints go only when every language he speaks is among them.
+LANGUAGES = frozenset("zh en ja ko vi th id ms tl hi ar fr de es pt ru it nl sv da fi no el pl cs hu ro bg hr sk".split())
+MAX_LANGUAGE_HINTS = 4
+# Context: up to five short texts; the model favours words it has seen in them.
+MAX_CONTEXT_TEXTS = 5
+MAX_CONTEXT_CHARS = 400
+# The focused app is read just after the microphone opens; the task waits this long for it.
+CONTEXT_WAIT_S = 0.5
 # A sentence much quieter than his own voice is someone else: a song or a
 # video playing nearby, which the streaming model writes down too.
 BACKGROUND_RATIO = 0.25
 _CJK_RE = re.compile(r"[㐀-鿿豈-﫿]")
+# Now and then the model splits the last letter off an English word ("agen t").
+# A lone consonant after a word is almost never meant; vowels and y can be
+# words in French and Spanish.
+_SPLIT_LETTER_RE = re.compile(r"(?<=[A-Za-z]{2}) ([b-df-hj-np-tv-xz])(?![A-Za-z]|\.[A-Za-z])")
+# Set once the service has refused the context or language hints and taken the task without them.
+_EXTRAS_REFUSED = threading.Event()
 
 
 def available() -> bool:
     return bool(os.environ.get(KEY_ENV))
 
 
-def hotwords(terms: list[str]) -> dict[str, int]:
-    """The word list as the model's instant hot words, within its limits:
+def hotwords(terms: list[str], weights: dict[str, int] | None = None) -> dict[str, int]:
+    """The word list as the model's instant hot words, heaviest first, within its limits:
     at most 15 characters for a term with Chinese in it, 7 words for one without."""
 
+    weights = weights or {}
+    ranked = sorted(dict.fromkeys(str(term or "").strip() for term in terms), key=lambda term: -weights.get(term, HOTWORD_WEIGHT))
     words: dict[str, int] = {}
-    for term in terms:
-        term = str(term or "").strip()
-        if not term or term in words:
+    supers = 0
+    for term in ranked:
+        if not term:
             continue
         if term.isascii():
             if len(term.split()) > 7:
                 continue
         elif len(term) > 15:
             continue
-        words[term] = HOTWORD_WEIGHT
+        weight = int(weights.get(term, HOTWORD_WEIGHT))
+        if weight >= SUPER_HOTWORD and supers < MAX_SUPER_HOTWORDS:
+            supers += 1
+            words[term] = SUPER_HOTWORD
+        else:
+            words[term] = max(1, min(5, weight))
         if len(words) >= MAX_HOTWORDS:
             break
     return words
+
+
+def language_hints(codes: Iterable[str]) -> list[str]:
+    """The languages he speaks as hints, or none when they would leave one of his out."""
+
+    hints = list(dict.fromkeys(str(code).lower() for code in codes if code))
+    if not hints or len(hints) > MAX_LANGUAGE_HINTS or not set(hints) <= LANGUAGES:
+        return []
+    return hints
+
+
+def context_messages(texts: Iterable[str]) -> list[dict]:
+    """Texts as the model's context turns, oldest first: the last five, each cut to its last 400 characters."""
+
+    kept = [text for text in (str(text or "").strip()[-MAX_CONTEXT_CHARS:].strip() for text in texts) if text]
+    return [{"role": "user", "content": [{"type": "input_text", "text": text}]} for text in kept[-MAX_CONTEXT_TEXTS:]]
+
+
+def rejoin_split_words(text: str) -> str:
+    """"agen t" -> "agent"."""
+
+    return _SPLIT_LETTER_RE.sub(r"\1", text)
 
 
 class QwenStream:
@@ -89,12 +138,21 @@ class QwenStream:
         sample_rate: int = 16000,
         url: str = URL,
         model: str = MODEL,
+        weights: dict[str, int] | None = None,
+        languages: Iterable[str] = (),
+        context_pending: bool = False,
     ) -> None:
         self.model = model
         self._api_key = api_key
         self._url = url
         self._sample_rate = sample_rate
-        self._hotwords = hotwords(terms or [])
+        self._hotwords = hotwords(terms or [], weights)
+        self._languages = language_hints(languages)
+        self._context: list[dict] = []
+        # With context on its way the task waits for it (CONTEXT_WAIT_S at most).
+        self._context_ready = threading.Event()
+        if not context_pending:
+            self._context_ready.set()
         self._frames: queue.Queue[bytes | None] = queue.Queue()
         self._pending = bytearray()
         self._frame_bytes = int(sample_rate * FRAME_SECONDS) * 2
@@ -107,6 +165,12 @@ class QwenStream:
 
     def start(self) -> None:
         threading.Thread(target=self._run, name="qwen-asr", daemon=True).start()
+
+    def give_context(self, texts: Iterable[str]) -> None:
+        """Once the focused app is read: what the model sees before it hears him."""
+
+        self._context = context_messages(texts)
+        self._context_ready.set()
 
     def feed(self, chunk: np.ndarray) -> None:
         """Audio thread: queue a block as 16-bit PCM. Cheap; never touches the network."""
@@ -137,7 +201,7 @@ class QwenStream:
             return None
         sentences = [self._sentences[key] for key in sorted(self._sentences)]
         kept = drop_background(sentences, audio, self._sample_rate)
-        text = "".join(str(sentence.get("text") or "") for sentence in kept).strip()
+        text = rejoin_split_words("".join(str(sentence.get("text") or "") for sentence in kept).strip())
         language = "zh" if _CJK_RE.search(text) else "en"
         return Transcript(text=text, language=language, confidence=1.0)
 
@@ -158,8 +222,9 @@ class QwenStream:
         One thread does both: an SSL socket is not safe to read and write from two."""
 
         task_id = uuid.uuid4().hex
+        headers = {"Authorization": f"Bearer {self._api_key}"}
         try:
-            ws = _WebSocket.connect(self._url, {"Authorization": f"Bearer {self._api_key}"}, CONNECT_TIMEOUT_S)
+            ws = _WebSocket.connect(self._url, headers, CONNECT_TIMEOUT_S)
         except Exception as exc:
             self._fail(f"connect: {exc}")
             return
@@ -167,20 +232,23 @@ class QwenStream:
         if self._cancelled:
             self._fail("cancelled")
             return
-        parameters: dict = {"format": "pcm", "sample_rate": self._sample_rate}
-        if self._hotwords:
-            parameters["vocabulary"] = self._hotwords
-        if self.model == MESSAGE_MODEL:
-            parameters["disfluency_removal_enabled"] = True
+        self._context_ready.wait(CONTEXT_WAIT_S)
+        extras = not _EXTRAS_REFUSED.is_set() and bool(self._languages or self._context)
         try:
-            ws.send_text(json.dumps({
-                "header": {"action": "run-task", "task_id": task_id, "streaming": "duplex"},
-                "payload": {
-                    "task_group": "audio", "task": "asr", "function": "recognition",
-                    "model": self.model, "parameters": parameters, "input": {},
-                },
-            }))
-            if self._read_event(ws) != "task-started":
+            try:
+                started = self._run_task(ws, task_id, extras)
+            except _TaskFailed as refused:
+                if not extras:
+                    raise
+                # The audio is still queued: start again on a fresh connection without them.
+                ws.close()
+                ws = self._ws = _WebSocket.connect(self._url, headers, CONNECT_TIMEOUT_S)
+                task_id = uuid.uuid4().hex
+                started = self._run_task(ws, task_id, extras=False)
+                if started:
+                    LOGGER.warning("Qwen refused the context or language hints (%s); leaving them out from now on", refused)
+                    _EXTRAS_REFUSED.set()
+            if not started:
                 self._fail("no task-started")
                 return
             sending = True
@@ -204,6 +272,28 @@ class QwenStream:
         except Exception as exc:
             self._fail(str(exc))
 
+    def _run_task(self, ws: _WebSocket, task_id: str, extras: bool) -> bool:
+        """Start the task, with the language hints and context when ``extras``. True once it has started."""
+
+        parameters: dict = {"format": "pcm", "sample_rate": self._sample_rate}
+        if self._hotwords:
+            parameters["vocabulary"] = self._hotwords
+        if self.model == MESSAGE_MODEL:
+            parameters["disfluency_removal_enabled"] = True
+        task_input: dict = {}
+        if extras and self._languages:
+            parameters["language_hints"] = self._languages
+        if extras and self._context:
+            task_input["context"] = self._context
+        ws.send_text(json.dumps({
+            "header": {"action": "run-task", "task_id": task_id, "streaming": "duplex"},
+            "payload": {
+                "task_group": "audio", "task": "asr", "function": "recognition",
+                "model": self.model, "parameters": parameters, "input": task_input,
+            },
+        }))
+        return self._read_event(ws) == "task-started"
+
     def _read_event(self, ws: _WebSocket) -> str:
         """Read one message; keep any sentence in it. Returns the event name."""
 
@@ -211,7 +301,7 @@ class QwenStream:
         header = message.get("header") or {}
         event = str(header.get("event") or "")
         if event == "task-failed":
-            raise RuntimeError(f"{header.get('error_code')}: {header.get('error_message')}")
+            raise _TaskFailed(f"{header.get('error_code')}: {header.get('error_message')}")
         if event == "result-generated":
             sentence = ((message.get("payload") or {}).get("output") or {}).get("sentence") or {}
             if not sentence.get("heartbeat") and int(sentence.get("sentence_id") or 0) > 0:
@@ -248,6 +338,10 @@ def drop_background(sentences: list[dict], audio: np.ndarray, sample_rate: int) 
     if len(kept) < len(sentences):
         LOGGER.info("Left out %d quiet sentence(s) as background sound", len(sentences) - len(kept))
     return kept
+
+
+class _TaskFailed(RuntimeError):
+    """The service answered with task-failed."""
 
 
 class _WebSocket:
@@ -389,13 +483,20 @@ class _WebSocket:
         return head
 
 
-def stream_if_set_up(terms: list[str], sample_rate: int, model: str = MODEL) -> QwenStream | None:
+def stream_if_set_up(
+    terms: list[str],
+    sample_rate: int,
+    model: str = MODEL,
+    weights: dict[str, int] | None = None,
+    languages: Iterable[str] = (),
+    context_pending: bool = False,
+) -> QwenStream | None:
     """A started stream when the key is there; None leaves the dictation to Whisper."""
 
     key = os.environ.get(KEY_ENV, "")
     if not key:
         LOGGER.warning("Qwen recognition is on but %s is not set; using Whisper", KEY_ENV)
         return None
-    stream = QwenStream(key, terms, sample_rate, model=model)
+    stream = QwenStream(key, terms, sample_rate, model=model, weights=weights, languages=languages, context_pending=context_pending)
     stream.start()
     return stream

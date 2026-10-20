@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 import dataclasses
 
 import threading
@@ -16,6 +17,7 @@ from typeless_local.app import Insertion, TypelessLocalApp, count_units
 from typeless_local.asr import Transcript
 from typeless_local.capsule import Capsule
 from typeless_local.mac_integration import FocusContext
+from typeless_local.menubar import Recent
 from typeless_local.preferences import Preferences
 from typeless_local.refine import MissingAPIKey, RefineResult
 
@@ -488,6 +490,26 @@ def test_recording_ducks_system_audio_until_finish(monkeypatch) -> None:
     assert app.recorder.started is True
     assert app.recorder.stopped is True
     assert app.overlay.shown() == ["starting", "rec", "transcribing"]
+
+
+def test_qwen_starts_with_his_words_and_languages_then_reads_the_focused_app(monkeypatch) -> None:
+    monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("Claude", "Jev 工具路由"))
+    monkeypatch.setattr(app_module.languages, "known", lambda: True)
+    monkeypatch.setattr(app_module.languages, "allowed", lambda heard: {"zh", "en"})
+    stream = SimpleNamespace(feed=lambda chunk: None, cancel=lambda: None, context=None)
+    stream.give_context = lambda texts: setattr(stream, "context", list(texts))
+    opened = []
+    monkeypatch.setattr(app_module.cloud_asr, "stream_if_set_up", lambda terms, rate, **kw: opened.append((terms, kw)) or stream)
+    app = _recording_app()
+    app.prefs = Preferences(asr_engine="qwen")
+    app.vocab = ["Jev"]
+    app.hotword_weights = {"Jev": 50}
+
+    app._start_recording("tap")
+
+    ((terms, kw),) = opened
+    assert terms == ["Jev"] and kw["weights"] == {"Jev": 50} and kw["languages"] == ["en", "zh"] and kw["context_pending"]
+    assert stream.context == ["Jev 工具路由"]
 
 
 def test_a_stuck_microphone_fails_fast_and_offers_a_relaunch(monkeypatch) -> None:
@@ -2208,6 +2230,7 @@ def test_qwen_heard_the_dictation_so_whisper_is_not_asked(monkeypatch) -> None:
     monkeypatch.setattr("typeless_local.app.paste_text", lambda _text: None)
     monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
     app = _make_app("whisper words")
+    app._qwen_heard = deque()
     cloud = _FakeCloud(Transcript(text="千问听到的。", language="zh", confidence=1.0))
     context = FocusContext(app_name="TextEdit", window_title="Untitled", can_insert_text=True)
 
@@ -2216,6 +2239,41 @@ def test_qwen_heard_the_dictation_so_whisper_is_not_asked(monkeypatch) -> None:
     assert app.asr.calls == []
     assert app.refiner.calls == [("千问听到的。", context)]
     assert cloud.cancelled
+    assert [(heard.text, heard.app) for heard in app._qwen_heard] == [("千问听到的。", "TextEdit")]
+
+
+def test_qwen_reads_what_it_heard_here_lately_then_the_window_and_the_text_before() -> None:
+    app = _make_app("")
+    app.prefs = Preferences(send_before_text=True)
+    now = time.time()
+    app._qwen_heard = deque([
+        Recent(text="一小时前", app="Claude", at=now - 3600),
+        Recent(text="别的 App 里", app="Ghostty", at=now - 10),
+        Recent(text="一", app="Claude", at=now - 50),
+        Recent(text="二", app="Claude", at=now - 40),
+        Recent(text="三 Jev", app="Claude", at=now - 30),
+        Recent(text="已在框里", app="Claude", at=now - 20),
+    ])
+    context = FocusContext(app_name="Claude", window_title="Jev 工具路由", before_text="前面写着已在框里")
+
+    assert app._qwen_context(context) == ["一", "二", "三 Jev", "Jev 工具路由", "前面写着已在框里"]
+
+    app.prefs = Preferences(send_window_title=False, send_before_text=False)
+    assert app._qwen_context(context) == ["二", "三 Jev", "已在框里"]
+
+
+def test_qwen_hears_the_chosen_language_or_all_of_his(monkeypatch) -> None:
+    app = _make_app("")
+    app.prefs = Preferences(heard_languages=["zh"])
+    monkeypatch.setattr(app_module.languages, "known", lambda: False)
+    assert app._qwen_languages() == [], "English alone before the Mac's languages are read would garble Chinese"
+
+    monkeypatch.setattr(app_module.languages, "known", lambda: True)
+    monkeypatch.setattr(app_module.languages, "allowed", lambda heard: {"zh", "en"})
+    assert app._qwen_languages() == ["en", "zh"]
+
+    app.asr._asr_config = {"language": "fr"}
+    assert app._qwen_languages() == ["fr"]
 
 
 def test_whisper_hears_the_whole_recording_when_qwen_fails(monkeypatch) -> None:
