@@ -31,6 +31,8 @@ CHOICES: dict[str, tuple[Any, ...]] = {
     "ui_language": i18n.CHOICES,
     # Where the speech model downloads from; "auto" is the mirror in mainland China.
     "model_source": reach.MODEL_SOURCES,
+    # Who hears the recording: Whisper on this Mac, or Qwen in Alibaba's cloud while he talks.
+    "asr_engine": ("local", "qwen"),
 }
 
 
@@ -67,6 +69,7 @@ class Preferences:
     onboarding_done: bool = False
     ui_language: str = "auto"
     model_source: str = "auto"
+    asr_engine: str = "local"
     # Languages heard in confident long dictations; with the spoken language on
     # Automatic they are allowed on short clips (languages.py). Not in Settings.
     heard_languages: list[str] = field(default_factory=list)

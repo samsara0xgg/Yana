@@ -2188,3 +2188,44 @@ def test_send_action_marks_the_dictation_and_recording_start_clears_it(monkeypat
 
     app._start_recording("tap")
     assert app._send_session is None
+
+
+class _FakeCloud:
+    model = "qwen-audio-3.1-asr-flash-streaming"
+
+    def __init__(self, transcript: Transcript | None) -> None:
+        self.transcript = transcript
+        self.cancelled = False
+
+    def finish(self, audio):
+        return self.transcript
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+def test_qwen_heard_the_dictation_so_whisper_is_not_asked(monkeypatch) -> None:
+    monkeypatch.setattr("typeless_local.app.paste_text", lambda _text: None)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+    app = _make_app("whisper words")
+    cloud = _FakeCloud(Transcript(text="千问听到的。", language="zh", confidence=1.0))
+    context = FocusContext(app_name="TextEdit", window_title="Untitled", can_insert_text=True)
+
+    app._process_audio(np.ones(16000, dtype=np.float32), context, None, (), 0, cloud)
+
+    assert app.asr.calls == []
+    assert app.refiner.calls == [("千问听到的。", context)]
+    assert cloud.cancelled
+
+
+def test_whisper_hears_the_whole_recording_when_qwen_fails(monkeypatch) -> None:
+    monkeypatch.setattr("typeless_local.app.paste_text", lambda _text: None)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+    app = _make_app("whisper words")
+    context = FocusContext(app_name="TextEdit", window_title="Untitled", can_insert_text=True)
+
+    app._process_audio(np.ones(16000, dtype=np.float32), context, None, (), 0, _FakeCloud(None))
+
+    (heard,) = app.asr.calls
+    assert heard.size == 16000
+    assert app.refiner.calls == [("whisper words", context)]

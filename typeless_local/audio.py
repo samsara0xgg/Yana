@@ -161,6 +161,8 @@ class MicrophoneRecorder:
         self._analyzer = VoiceActivityAnalyzer(sample_rate)
         # Called on the audio thread with each stretch cut at a pause; keep it quick.
         self.on_stretch = on_stretch
+        # Called on the audio thread with every block, for recognition that streams; keep it quick.
+        self.on_chunk: StretchCallback | None = None
         self.heard_until = 0  # samples already handed to on_stretch this recording
         self._stretch_from = 0
         self._stretch_samples = 0
@@ -282,6 +284,9 @@ class MicrophoneRecorder:
             chunk = np.asarray(indata[:, channel], dtype=np.float32).copy()
             with self._lock:
                 self._chunks.append(chunk)
+            on_chunk = self.on_chunk
+            if on_chunk is not None:
+                on_chunk(chunk)
             self._track_stretch(chunk)
             if self.on_level is not None and chunk.size:
                 self.on_level(self._analyzer.analyze(chunk))

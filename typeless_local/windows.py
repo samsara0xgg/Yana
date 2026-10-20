@@ -25,7 +25,7 @@ import time
 from typing import Callable
 from urllib.parse import urlparse
 
-from typeless_local import app_version, brand, devices, history, i18n, keychain, login_item, permissions, preferences, reach, trial, usage, vocab
+from typeless_local import app_version, brand, cloud_asr, devices, history, i18n, keychain, login_item, permissions, preferences, reach, trial, usage, vocab
 from typeless_local.asr import mlx_whisper_repo
 from typeless_local.config import preset_names, refine_config_for
 from typeless_local.mac_integration import FocusContext, has_accessibility_trust, request_accessibility_trust, set_clipboard_text
@@ -325,6 +325,13 @@ class Windows:
         active = getattr(config.refine, "preset", "")
         wanted = trial.OWN_KEY_ENV if active == trial.PRESET else getattr(config.refine, "api_key_env", "")
         keys = [key for key in keys if key["env"] == wanted]
+        cloud_key = os.environ.get(cloud_asr.KEY_ENV, "")
+        asr_key = {
+            "env": cloud_asr.KEY_ENV,
+            "service": t("阿里云百炼", "Alibaba Cloud Model Studio"),
+            "hint": keychain.masked(cloud_key),
+            "where": "env" if cloud_asr.KEY_ENV in in_file else ("keychain" if cloud_key else ""),
+        }
 
         asr_config = jarvis.get("asr") or {}
         ducker = getattr(app, "audio_ducker", None)
@@ -346,6 +353,7 @@ class Windows:
             "presets": presets,
             "active": getattr(config.refine, "preset", ""),
             "keys": keys,
+            "asrKey": asr_key,
             "trial": {"on": getattr(config.refine, "preset", "") == trial.PRESET, "over": bool(getattr(app, "_trial_over", False))},
             "inputs": devices.list_input_devices(),
             "input": getattr(config, "input_device", "") or "",

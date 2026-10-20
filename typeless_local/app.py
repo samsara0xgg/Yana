@@ -24,7 +24,7 @@ from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 import numpy as np
 from PyObjCTools import AppHelper
 
-from typeless_local import app_version, brand, diagnostics, feedback, i18n, keyboard_layout, keychain, languages, permissions, reach, trial, usage
+from typeless_local import app_version, brand, cloud_asr, diagnostics, feedback, i18n, keyboard_layout, keychain, languages, permissions, reach, trial, usage
 from typeless_local.i18n import t
 from typeless_local.asr import JarvisASR, Transcript, mlx_whisper_repo
 from typeless_local.audio import MicrophoneRecorder, keep_recording, peak_level
@@ -230,6 +230,8 @@ class TypelessLocalApp:
         self._last_short_tap_at = 0.0
         self._active_session_id = 0
         self._stretches: list[Future[Transcript]] = []
+        # This dictation's stream to Qwen when that is the recognizer; None means Whisper.
+        self._cloud: cloud_asr.QwenStream | None = None
         self._capture_device = ""
         self._ducked = False
         self._insertion: Insertion | None = None
@@ -1506,10 +1508,12 @@ class TypelessLocalApp:
             # is only read once the microphone is open.
             self.capsule.show("starting")
         self._stretches = []
+        self._cloud = self._open_cloud_stream()
         try:
             capture = self._start_microphone(capture)
         except Exception:
             LOGGER.exception("Failed to start microphone")
+            self._close_cloud_stream()
             self._restore_audio_ducking()
             self.state = "idle"
             self._set_menubar("idle")
@@ -1536,8 +1540,24 @@ class TypelessLocalApp:
         # stop. A silent pass queued now on the worker is done while he talks.
         warmup = getattr(getattr(self, "asr", None), "warmup", None)
         executor = getattr(self, "executor", None)
-        if warmup is not None and executor is not None:
+        if warmup is not None and executor is not None and self._cloud is None:
             executor.submit(warmup)
+
+    def _open_cloud_stream(self) -> cloud_asr.QwenStream | None:
+        """With Qwen chosen and its key set: a stream the microphone feeds from its first block."""
+
+        stream = None
+        if self.prefs.asr_engine == "qwen":
+            stream = cloud_asr.stream_if_set_up(getattr(self, "vocab", []) or [], int(getattr(self.config, "sample_rate", 16000)))
+        self.recorder.on_chunk = stream.feed if stream is not None else None
+        return stream
+
+    def _close_cloud_stream(self) -> cloud_asr.QwenStream | None:
+        """Unhook this dictation's stream from the microphone and hand it over."""
+
+        stream, self._cloud = getattr(self, "_cloud", None), None
+        self.recorder.on_chunk = None
+        return stream
 
     def _duck_for(self, capture: str) -> None:
         """Mute the speakers and pause music for this recording, unless a headset makes it pointless."""
@@ -1634,6 +1654,9 @@ class TypelessLocalApp:
             audio = self.recorder.stop()
         except Exception:
             LOGGER.exception("Failed to stop microphone")
+            cloud = self._close_cloud_stream()
+            if cloud is not None:
+                cloud.cancel()
             self._restore_audio_ducking()
             self.state = "idle"
             self._set_menubar("idle")
@@ -1646,7 +1669,7 @@ class TypelessLocalApp:
         stretches, self._stretches = getattr(self, "_stretches", []), []
         heard_until = int(getattr(self.recorder, "heard_until", 0))
         future = self.executor.submit(
-            self._process_audio, audio, self.focus_context, session_id, stretches, heard_until
+            self._process_audio, audio, self.focus_context, session_id, stretches, heard_until, self._close_cloud_stream()
         )
         future.add_done_callback(self._log_processing_done)
 
@@ -1663,6 +1686,9 @@ class TypelessLocalApp:
         for stretch in getattr(self, "_stretches", []):
             stretch.cancel()
         self._stretches = []
+        cloud = self._close_cloud_stream()
+        if cloud is not None:
+            cloud.cancel()
         self._restore_audio_ducking()
         self.state = "idle"
         self._set_menubar("idle")
@@ -1806,8 +1832,12 @@ class TypelessLocalApp:
     # ----------------------------------------------------------- processing
 
     def _on_stretch(self, stretch: np.ndarray) -> None:
-        """Audio thread: a stretch cut at his pause is heard now, ahead of the stop."""
+        """Audio thread: a stretch cut at his pause is heard now, ahead of the stop.
 
+        Not while Qwen hears the dictation: if it fails, Whisper hears the whole recording."""
+
+        if getattr(self, "_cloud", None) is not None:
+            return
         self._stretches.append(self.executor.submit(self._hear, stretch))
         self._prewarm_refiner()
 
@@ -1906,6 +1936,7 @@ class TypelessLocalApp:
         session_id: int | None = None,
         stretches: list[Future[Transcript]] | tuple[()] = (),
         heard_until: int = 0,
+        cloud: cloud_asr.QwenStream | None = None,
     ) -> None:
         session_id = getattr(self, "_active_session_id", 0) if session_id is None else session_id
         headless = bool(getattr(self, "headless", False))
@@ -1964,10 +1995,16 @@ class TypelessLocalApp:
             # Stretches cut at his pauses were heard while he talked (on this
             # executor, so they are done); only the rest is left. Without a cut the whole recording already passed the quality gate;
             # after one, the rest may be only his closing pause.
-            parts = [stretch.result() for stretch in stretches]
-            rest = audio[heard_until:]
-            parts.append(self._hear(rest) if parts else self._whisper(rest))
-            transcript = _join(parts)
+            transcript = cloud.finish(audio) if cloud is not None else None
+            if transcript is not None:
+                record.asr_model = cloud.model
+            elif cloud is not None:
+                transcript = self._whisper(audio)  # no stretches were heard while Qwen was listening
+            else:
+                parts = [stretch.result() for stretch in stretches]
+                rest = audio[heard_until:]
+                parts.append(self._hear(rest) if parts else self._whisper(rest))
+                transcript = _join(parts)
             record.raw_asr_text = transcript.text
             record.raw_asr_language = transcript.language
             record.raw_asr_confidence = float(getattr(transcript, "confidence", 0.0) or 0.0)
@@ -2056,6 +2093,8 @@ class TypelessLocalApp:
                 return
             raise
         finally:
+            if cloud is not None:
+                cloud.cancel()  # a dictation dropped before recognition leaves its stream open
             record.ended_at = time.time()
             record.latency_total_ms = int((record.ended_at - started) * 1000)
             self._count_dictation(record)
@@ -2334,9 +2373,9 @@ def _eta_text(fraction: float, elapsed: float) -> str:
 
 
 def api_key_names(config: AppConfig) -> list[str]:
-    """Every environment variable a refinement preset reads its key from."""
+    """Every environment variable an API key is read from: each refinement preset's, and Qwen recognition's."""
 
-    names = [config.refine.api_key_env]
+    names = [config.refine.api_key_env, cloud_asr.KEY_ENV]
     for preset in preset_names(config.jarvis_config):
         try:
             names.append(refine_config_for(config.jarvis_config, preset).api_key_env)
