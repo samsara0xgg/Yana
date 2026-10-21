@@ -51,9 +51,8 @@ FINISH_TIMEOUT_S = 4.0
 FRAME_SECONDS = 0.1
 HOTWORD_WEIGHT = 4
 MAX_HOTWORDS = 2000
-# Weights run 1-5; 50 marks a "super" hot word the model leans on much harder, at most 50 of them.
-SUPER_HOTWORD = 50
-MAX_SUPER_HOTWORDS = 50
+# Weights run 1-5. The model also takes 50 for a "super" hot word, which pulls
+# similar-sounding words to it as well, so Yana never sends one.
 # Codes the model takes as language hints, at most four. A hint rules out the
 # rest, so hints go only when every language he speaks is among them.
 LANGUAGES = frozenset("zh en ja ko vi th id ms tl hi ar fr de es pt ru it nl sv da fi no el pl cs hu ro bg hr sk".split())
@@ -91,7 +90,6 @@ def hotwords(terms: list[str], weights: dict[str, int] | None = None) -> dict[st
     weights = weights or {}
     ranked = sorted(dict.fromkeys(str(term or "").strip() for term in terms), key=lambda term: -weights.get(term, HOTWORD_WEIGHT))
     words: dict[str, int] = {}
-    supers = 0
     for term in ranked:
         if not term:
             continue
@@ -100,12 +98,7 @@ def hotwords(terms: list[str], weights: dict[str, int] | None = None) -> dict[st
                 continue
         elif len(term) > 15:
             continue
-        weight = int(weights.get(term, HOTWORD_WEIGHT))
-        if weight >= SUPER_HOTWORD and supers < MAX_SUPER_HOTWORDS:
-            supers += 1
-            words[term] = SUPER_HOTWORD
-        else:
-            words[term] = max(1, min(5, weight))
+        words[term] = max(1, min(5, int(weights.get(term, HOTWORD_WEIGHT))))
         if len(words) >= MAX_HOTWORDS:
             break
     return words
@@ -314,10 +307,9 @@ class QwenStream:
             task_input["context"] = self._context
         # What steered this dictation, for checking by hand in app.log.
         LOGGER.info(
-            "Qwen task: languages %s, %d hot words (%d super), context %s",
+            "Qwen task: languages %s, %d hot words, context %s",
             parameters.get("language_hints") or "auto",
             len(self._hotwords),
-            sum(1 for weight in self._hotwords.values() if weight == SUPER_HOTWORD),
             json.dumps([turn["content"][0]["text"] for turn in task_input.get("context", [])], ensure_ascii=False),
         )
         ws.send_text(json.dumps({

@@ -541,12 +541,12 @@ def test_qwen_starts_with_his_words_and_languages_then_reads_the_focused_app(mon
     app = _recording_app()
     app.prefs = Preferences(asr_engine="qwen")
     app.vocab = ["Jev"]
-    app.hotword_weights = {"Jev": 50}
+    app.hotword_weights = {"Jev": 5}
 
     app._start_recording("tap")
 
     ((terms, kw),) = opened
-    assert terms == ["Jev"] and kw["weights"] == {"Jev": 50} and kw["languages"] == ["en", "zh"] and kw["context_pending"]
+    assert terms == ["Jev"] and kw["weights"] == {"Jev": 5} and kw["languages"] == ["en", "zh"] and kw["context_pending"]
     assert stream.context == ["Jev 工具路由"]
 
 

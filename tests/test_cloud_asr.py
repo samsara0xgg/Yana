@@ -218,13 +218,11 @@ def _extras_welcome(monkeypatch):
     monkeypatch.setattr(cloud_asr, "_EXTRAS_REFUSED", threading.Event())
 
 
-def test_hot_words_weigh_what_he_fixed_and_cap_the_super_ones():
-    weights = {f"w{i}": 50 for i in range(51)} | {"auto": 3, "odd": 9}
-    words = cloud_asr.hotwords(["auto", "odd", "plain"] + [f"w{i}" for i in range(51)], weights)
+def test_hot_words_go_heaviest_first_and_never_above_five():
+    words = cloud_asr.hotwords(["auto", "plain", "Jev", "Jarvis"], {"auto": 3, "Jev": 50, "Jarvis": 5})
 
-    assert list(words)[:50] == [f"w{i}" for i in range(50)]  # heaviest first
-    assert sum(1 for weight in words.values() if weight == 50) == 50
-    assert words["w50"] == 5 and words["odd"] == 5 and words["plain"] == 4 and words["auto"] == 3
+    assert words == {"Jev": 5, "Jarvis": 5, "plain": 4, "auto": 3}
+    assert list(words) == ["Jev", "Jarvis", "plain", "auto"]
 
 
 def test_language_hints_only_when_they_cover_every_language_he_speaks():
@@ -273,7 +271,7 @@ def test_the_task_starts_with_his_languages_and_the_context(caplog):
     assert server.run_task["payload"]["parameters"]["language_hints"] == ["zh", "en"]
     assert [turn["content"][0]["text"] for turn in server.run_task["payload"]["input"]["context"]] == [
         "上次说的 Jev", "Jev 工具路由 - Claude"]
-    assert 'Qwen task: languages [\'zh\', \'en\'], 0 hot words (0 super), context ["上次说的 Jev", "Jev 工具路由 - Claude"]' in caplog.text
+    assert 'Qwen task: languages [\'zh\', \'en\'], 0 hot words, context ["上次说的 Jev", "Jev 工具路由 - Claude"]' in caplog.text
 
 
 def test_context_that_never_comes_does_not_hold_the_task(monkeypatch):

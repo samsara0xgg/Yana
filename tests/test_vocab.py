@@ -179,7 +179,7 @@ def test_whisper_terms_rank_fixes_then_use_then_recency(tmp_path: Path) -> None:
     assert [(e["term"], e["n"]) for e in vocab._load_sections(path)["learned"]] == [("Jev", 1), ("merge", 2), ("Jarvis", 1)]
 
 
-def test_hotword_weights_favour_words_fixed_by_hand(tmp_path: Path) -> None:
+def test_hotword_weights_favour_words_kept_by_hand(tmp_path: Path) -> None:
     path = tmp_path / "vocab.yaml"
     vocab.save_user_terms(path, ["Jarvis"])
     vocab.save_auto_terms(path, ["PyObjC"])
@@ -187,4 +187,4 @@ def test_hotword_weights_favour_words_fixed_by_hand(tmp_path: Path) -> None:
     vocab.learn_term(path, "Jev", "Jeff")
     vocab.learn_term(path, "Jev", "Java")
 
-    assert vocab.hotword_weights(path) == {"PyObjC": 3, "Jarvis": 4, "merge": 5, "Jev": 50}
+    assert vocab.hotword_weights(path) == {"PyObjC": 3, "Jarvis": 5, "merge": 5, "Jev": 5}  # Jev doesn't drown out Jarvis
