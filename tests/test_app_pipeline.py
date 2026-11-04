@@ -787,61 +787,86 @@ def test_cancel_while_recording_says_so() -> None:
 
 
 class _TailRecorder(_FakeRecorder):
+    def __init__(self) -> None:
+        super().__init__()
+        self.waited = []
+
     @property
     def is_recording(self) -> bool:
         return self.started and not self.stopped
 
+    def wait_until_heard(self, moment, timeout) -> bool:
+        self.waited.append((moment, timeout))
+        return True
 
-def _tail_timers(monkeypatch) -> list:
+
+def _tail_threads(monkeypatch) -> list:
     made = []
 
-    class Timer:
-        def __init__(self, delay, callback, args=()) -> None:
-            self.delay, self.callback, self.args, self.daemon = delay, callback, args, False
+    class Thread:
+        def __init__(self, target, args=(), name=None, daemon=None) -> None:
+            self.target, self.args = target, args
             made.append(self)
 
         def start(self) -> None:
             pass
 
-        def fire(self) -> None:
-            self.callback(*self.args)
+        def run(self) -> None:
+            self.target(*self.args)
 
-    monkeypatch.setattr(app_module.threading, "Timer", Timer)
-    monkeypatch.setattr(app_module, "STOP_TAIL_S", 0.3)
+    monkeypatch.setattr(app_module.threading, "Thread", Thread)
+    monkeypatch.setattr(app_module, "STOP_TAIL_S", 0.6)
     return made
 
 
-def test_the_microphone_keeps_listening_briefly_after_the_stop_press(monkeypatch) -> None:
-    timers = _tail_timers(monkeypatch)
+def _tail_app() -> TypelessLocalApp:
     app = _recording_app()
     app.recorder = _TailRecorder()
     app.recorder.started = True
     app.state, app._active_session_id = "recording", 3
+    return app
+
+
+def test_the_microphone_closes_once_the_sound_of_the_stop_press_has_arrived(monkeypatch) -> None:
+    threads = _tail_threads(monkeypatch)
+    app = _tail_app()
+    pressed = time.monotonic() - 0.02
+    app._stop_pressed_at = pressed
 
     app._finish_recording()
 
-    # The last word is still arriving: nothing is closed or heard yet, but the capsule has moved on.
+    # The last word is still on its way: nothing is closed or heard yet, but the capsule has moved on.
     assert app.state == "processing" and app.recorder.stopped is False
     assert app.executor.submissions == []
     assert app.overlay.shown()[-1] == "transcribing"
-    assert [timer.delay for timer in timers] == [0.3]
 
-    timers[0].fire()
+    threads[0].run()
 
+    assert app.recorder.waited == [(pytest.approx(pressed + app_module.STOP_MARGIN_S), 0.6)]
     assert app.recorder.stopped is True
     assert app.executor.submissions[0][0] == app._process_audio
 
 
-def test_cancel_during_the_tail_closes_the_microphone_and_hears_nothing(monkeypatch) -> None:
-    timers = _tail_timers(monkeypatch)
-    app = _recording_app()
-    app.recorder = _TailRecorder()
-    app.recorder.started = True
-    app.state, app._active_session_id = "recording", 3
+def test_a_press_time_from_another_clock_counts_from_now(monkeypatch) -> None:
+    threads = _tail_threads(monkeypatch)
+    app = _tail_app()
+    app._stop_pressed_at = 12.0  # nowhere near time.monotonic()
+
+    before = time.monotonic()
+    app._finish_recording()
+    threads[0].run()
+
+    moment = app.recorder.waited[0][0] - app_module.STOP_MARGIN_S
+    assert before <= moment <= time.monotonic()
+
+
+def test_cancel_while_waiting_for_the_last_word_closes_the_microphone_and_hears_nothing(monkeypatch) -> None:
+    threads = _tail_threads(monkeypatch)
+    app = _tail_app()
 
     app._finish_recording()
     app._cancel()
-    timers[0].fire()
+    threads[0].run()
 
     assert app.recorder.stopped is True
     assert app.state == "idle"

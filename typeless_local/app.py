@@ -99,11 +99,14 @@ SEND_SETTLE_S = 0.1
 # race; deciding to send is done under this lock on both sides.
 _SEND_LOCK = threading.Lock()
 MIN_MIC_STARTUP_SECONDS = 0.75
-# After the stop press the microphone keeps listening this long. The last
-# syllable is still on its way when the key goes down: a mic delivers sound
-# 50-250 ms late (Bluetooth the most), and people press as they say the last
-# word, not after it. Stopping on the press cut that word off.
-STOP_TAIL_S = 0.3
+# The microphone closes once the sound from the moment of the stop press has
+# arrived, not on the press. A mic delivers sound 50-250 ms late (Bluetooth the
+# most), so closing on the press cut off the last word. STOP_MARGIN_S more is
+# kept for the last syllable's ring; STOP_TAIL_S caps the wait (0 = close at once).
+STOP_MARGIN_S = 0.1
+STOP_TAIL_S = 0.6
+# A press time further off than this from now is from another clock or stale: use now.
+PRESS_CLOCK_SLACK_S = 1.0
 # A non-Chinese transcript this short is usually Whisper inventing a word over
 # noise ("you", "Bye."), but it is also how "OK" and "Yes" come out. Whisper's
 # own confidence tells them apart: invented words score low. A language the
@@ -150,6 +153,15 @@ class Insertion:
     raw: str
     pid: int
     context: FocusContext
+
+
+def _press_moment(pressed_at: float | None) -> float:
+    """The key event's time on the time.monotonic() clock, or now when it is missing or implausible."""
+
+    now = time.monotonic()
+    if pressed_at and now - PRESS_CLOCK_SLACK_S <= pressed_at <= now + 0.05:
+        return pressed_at
+    return now
 
 
 class TypelessLocalApp:
@@ -1073,6 +1085,7 @@ class TypelessLocalApp:
                 return
             if action == "hold_end":
                 if self._hold_is_current():
+                    self._stop_pressed_at = self.hotkeys.last_primary_up_at
                     self._finish_recording()
                 return
             if action == "hold_abort":
@@ -1139,6 +1152,7 @@ class TypelessLocalApp:
                 self._arm_hold_timer(now)
         elif self.state == "recording" and self.mode in ("tap", "hands_free"):
             self._finished_by_tap = (now, getattr(self, "_active_session_id", 0))
+            self._stop_pressed_at = now
             self._finish_recording()
 
     def _on_hold_start(self) -> None:
@@ -1186,6 +1200,7 @@ class TypelessLocalApp:
                 self._show_recording_ui()
             return
 
+        self._stop_pressed_at = up_at
         self._finish_recording()
 
     def _arm_hold_timer(self, down_at: float) -> None:
@@ -1733,15 +1748,19 @@ class TypelessLocalApp:
         self.state = "processing"
         self._set_menubar("processing")
         self.capsule.show("transcribing")
-        tail = float(getattr(self, "stop_tail_s", STOP_TAIL_S))
-        if tail <= 0:
+        pressed_at, self._stop_pressed_at = getattr(self, "_stop_pressed_at", None), None
+        if STOP_TAIL_S <= 0:
             self._stop_microphone(session_id)
             return
-        timer = threading.Timer(tail, self._stop_microphone_after_tail, args=(session_id,))
-        timer.daemon = True
-        timer.start()
+        moment = _press_moment(pressed_at) + STOP_MARGIN_S
+        threading.Thread(
+            target=self._stop_microphone_when_heard, args=(session_id, moment), name="mic-tail", daemon=True
+        ).start()
 
-    def _stop_microphone_after_tail(self, session_id: int) -> None:
+    def _stop_microphone_when_heard(self, session_id: int, moment: float) -> None:
+        wait = getattr(self.recorder, "wait_until_heard", None)
+        if wait is not None:
+            wait(moment, STOP_TAIL_S)
         with self._lock:
             # Cancelled during the tail: _cancel has stopped the microphone already,
             # and it may be recording the next dictation by now.
@@ -1778,7 +1797,7 @@ class TypelessLocalApp:
         self._active_session_id = getattr(self, "_active_session_id", 0) + 1
         self._cancel_recording_timeout()
         self._stop_holding()
-        # "processing" too: the microphone stays open for STOP_TAIL_S after the stop press.
+        # "processing" too: the microphone stays open until the sound of the stop press has arrived.
         if was == "recording" or getattr(self.recorder, "is_recording", False):
             try:
                 self.recorder.stop()

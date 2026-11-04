@@ -325,3 +325,29 @@ def test_a_microphone_that_never_opens_fails_the_start_instead_of_hanging(monkey
         raise AssertionError("a wedged recorder should refuse to start")
     stuck.set()
     assert not recorder.is_recording
+
+
+def test_waiting_for_the_press_moment_counts_the_devices_input_delay() -> None:
+    import time
+
+    recorder = MicrophoneRecorder(sample_rate=16000)
+    recorder._stream = object()  # recording
+    # A block whose first sample was captured 0.2 s before it reached the callback.
+    late = SimpleNamespace(currentTime=100.2, inputBufferAdcTime=100.0)
+    recorder._note_heard(800, late)
+    arrived = time.monotonic()
+
+    # Spoken 0.15 s ago: this block (spoken 0.2 s ago, 0.05 s long) does not yet cover it.
+    assert recorder.wait_until_heard(arrived - 0.1, timeout=0.05) is False
+    assert recorder.wait_until_heard(arrived - 0.2, timeout=0.05) is True
+
+    feeder = threading.Timer(0.05, recorder._note_heard, args=(800, SimpleNamespace(currentTime=0, inputBufferAdcTime=0)))
+    feeder.start()
+    assert recorder.wait_until_heard(arrived, timeout=1.0) is True
+
+
+def test_waiting_for_the_press_moment_ends_when_the_microphone_stops() -> None:
+    recorder = MicrophoneRecorder(sample_rate=16000)
+    recorder._stream = None
+
+    assert recorder.wait_until_heard(1e12, timeout=1.0) is False

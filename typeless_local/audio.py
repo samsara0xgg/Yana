@@ -168,6 +168,10 @@ class MicrophoneRecorder:
         self._stretch_samples = 0
         self._quiet_samples = 0
         self._spoke = False
+        # time.monotonic() at which the last sample delivered was spoken into the mic.
+        self._heard_to = 0.0
+        self._input_latency = 0.0
+        self._heard = threading.Condition()
 
     @property
     def is_recording(self) -> bool:
@@ -202,6 +206,40 @@ class MicrophoneRecorder:
         """RMS of the loudest short window (see :func:`peak_level`)."""
 
         return peak_level(audio, self.sample_rate, window_seconds)
+
+    def wait_until_heard(self, moment: float, timeout: float) -> bool:
+        """Block until the audio spoken at ``moment`` (time.monotonic()) has arrived.
+
+        Sound reaches the callback late: the device's input latency plus a
+        block. Waiting for the press moment itself, rather than a fixed time,
+        keeps exactly what was said up to it. False on timeout or once stopped.
+        """
+
+        deadline = time.monotonic() + timeout
+        with self._heard:
+            while self._heard_to < moment:
+                left = deadline - time.monotonic()
+                if left <= 0 or self._stream is None:
+                    return False
+                self._heard.wait(min(left, 0.02))
+        return True
+
+    def _note_heard(self, frames: int, time_info) -> None:
+        """Audio thread: when the end of this block was spoken, on the time.monotonic() clock.
+
+        The stream's own clock may not be time.monotonic()'s, so only its
+        difference is used: how long ago the block's first sample was captured."""
+
+        late = self._input_latency
+        try:
+            current, captured = float(time_info.currentTime), float(time_info.inputBufferAdcTime)
+            if current > 0 and captured > 0 and 0 <= current - captured < 1.0:
+                late = current - captured
+        except Exception:
+            pass
+        with self._heard:
+            self._heard_to = time.monotonic() - late + frames / self.sample_rate
+            self._heard.notify_all()
 
     def _track_stretch(self, chunk: np.ndarray) -> None:
         """Per block: after 0.5 s of quiet, hand the stretch before it to ``on_stretch``."""
@@ -270,6 +308,7 @@ class MicrophoneRecorder:
         self._started_at = time.monotonic()
         self.heard_until = self._stretch_from = self._stretch_samples = self._quiet_samples = 0
         self._spoke = False
+        self._heard_to = 0.0
         blocksize = max(1, int(self.sample_rate * self.block_duration))
         channel, channels = self.input_channel, self.channels
         if channel:
@@ -278,7 +317,7 @@ class MicrophoneRecorder:
             channels = max(channels, channel + 1)
 
         def callback(indata, frames, time_info, status) -> None:
-            del frames, time_info
+            self._note_heard(frames, time_info)
             if status:
                 LOGGER.warning("Audio input status: %s", status)
             chunk = np.asarray(indata[:, channel], dtype=np.float32).copy()
@@ -333,7 +372,12 @@ class MicrophoneRecorder:
         if "error" in opened:
             raise opened["error"]
         self._stream = opened["stream"]
-        LOGGER.info("Microphone recording started")
+        try:
+            latency = opened["stream"].latency
+            self._input_latency = float(latency[0] if isinstance(latency, (tuple, list)) else latency)
+        except Exception:
+            self._input_latency = 0.0
+        LOGGER.info("Microphone recording started (input latency %.0f ms)", self._input_latency * 1000)
 
     def stop(self) -> np.ndarray:
         """Stop recording and return captured mono audio."""
