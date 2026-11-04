@@ -30,6 +30,7 @@ from typeless_local.i18n import t
 from typeless_local.asr import JarvisASR, Transcript, mlx_whisper_repo
 from typeless_local.audio import MicrophoneRecorder, keep_recording, peak_level
 from typeless_local import devices
+from typeless_local.ducking import Ducker
 from typeless_local.capsule import INSERTED_STATES, Capsule
 from typeless_local.config import (
     AppConfig,
@@ -210,7 +211,7 @@ class TypelessLocalApp:
             except ImportError:
                 from core.media_ducking import SystemAudioDucker
 
-            self.audio_ducker = SystemAudioDucker.from_config(config.jarvis_config)
+            self.audio_ducker = Ducker(SystemAudioDucker.from_config(config.jarvis_config))
             atexit.register(self.audio_ducker.restore_all)
             self.hotkeys = GlobalHotkeyMonitor(
                 self._on_hotkey,

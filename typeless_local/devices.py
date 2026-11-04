@@ -289,6 +289,115 @@ def output_is_headphones() -> bool:
         return False
 
 
+# A Multi-Output Device has no volume of its own, so "set volume" can't lower
+# it; each device inside it (speakers, a display) can be muted on its own.
+_MAX_CHANNEL_ELEMENTS = 8
+
+
+def _ensure_setters(lib: Any) -> None:  # noqa: ANN401
+    if getattr(lib, "_yana_setters", False):
+        return
+    address = ctypes.POINTER(_PropertyAddress)
+    lib.AudioObjectHasProperty.argtypes = [ctypes.c_uint32, address]
+    lib.AudioObjectHasProperty.restype = ctypes.c_ubyte
+    lib.AudioObjectIsPropertySettable.argtypes = [ctypes.c_uint32, address, ctypes.POINTER(ctypes.c_ubyte)]
+    lib.AudioObjectIsPropertySettable.restype = ctypes.c_int32
+    lib.AudioObjectSetPropertyData.argtypes = [
+        ctypes.c_uint32, address, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p,
+    ]
+    lib.AudioObjectSetPropertyData.restype = ctypes.c_int32
+    lib._yana_setters = True
+
+
+def _object_list(lib: Any, obj: int, selector: str) -> tuple[int, ...]:  # noqa: ANN401
+    address = _PropertyAddress(_fourcc(selector), _SCOPE_GLOBAL, _ELEMENT_MAIN)
+    size = ctypes.c_uint32(0)
+    if lib.AudioObjectGetPropertyDataSize(obj, ctypes.byref(address), 0, None, ctypes.byref(size)) or not size.value:
+        return ()
+    buffer = (ctypes.c_uint32 * (size.value // 4))()
+    if lib.AudioObjectGetPropertyData(obj, ctypes.byref(address), 0, None, ctypes.byref(size), buffer):
+        return ()
+    return tuple(buffer[: size.value // 4])
+
+
+def _settable(lib: Any, obj: int, selector: str, element: int) -> bool:  # noqa: ANN401
+    address = _PropertyAddress(_fourcc(selector), _SCOPE_OUTPUT, element)
+    if not lib.AudioObjectHasProperty(obj, ctypes.byref(address)):
+        return False
+    flag = ctypes.c_ubyte(0)
+    return not lib.AudioObjectIsPropertySettable(obj, ctypes.byref(address), ctypes.byref(flag)) and bool(flag.value)
+
+
+def _get_value(lib: Any, obj: int, selector: str, element: int, kind: Any):  # noqa: ANN401
+    address = _PropertyAddress(_fourcc(selector), _SCOPE_OUTPUT, element)
+    value = kind(0)
+    size = ctypes.c_uint32(ctypes.sizeof(value))
+    if lib.AudioObjectGetPropertyData(obj, ctypes.byref(address), 0, None, ctypes.byref(size), ctypes.byref(value)):
+        return None
+    return value.value
+
+
+def _set_value(lib: Any, obj: int, selector: str, element: int, kind: Any, new) -> bool:  # noqa: ANN401
+    address = _PropertyAddress(_fourcc(selector), _SCOPE_OUTPUT, element)
+    value = kind(new)
+    return not lib.AudioObjectSetPropertyData(obj, ctypes.byref(address), 0, None, ctypes.sizeof(value), ctypes.byref(value))
+
+
+def _silence_part(lib: Any, part: int) -> list[tuple]:  # noqa: ANN401
+    """Mute one output device, or else turn it to 0; what was changed, to undo later."""
+
+    elements = (_ELEMENT_MAIN,), tuple(range(1, _MAX_CHANNEL_ELEMENTS + 1))
+    for selector, kind, quiet in (("mute", ctypes.c_uint32, 1), ("volm", ctypes.c_float, 0.0)):
+        for group in elements:
+            usable = [element for element in group if _settable(lib, part, selector, element)]
+            if not usable:
+                continue
+            changed = []
+            for element in usable:
+                old = _get_value(lib, part, selector, element, kind)
+                if old is not None and old != quiet and _set_value(lib, part, selector, element, kind, quiet):
+                    changed.append((part, selector, element, kind, old))
+            return changed
+    return []
+
+
+def silence_output_parts() -> list[tuple]:
+    """When the system plays into an aggregate (a Multi-Output Device): mute
+    each device in it. Returns what to hand ``restore_output_parts``; empty
+    when the output is not an aggregate or nothing in it could be muted."""
+
+    lib = _load_coreaudio()
+    if lib is None:
+        return []
+    changed: list[tuple] = []
+    try:
+        _ensure_setters(lib)
+        device = _read_u32(lib, _SYSTEM_OBJECT, "dOut")
+        parts = [part for part in _object_list(lib, device, "agrp") if _has_streams(lib, part, _SCOPE_OUTPUT)] if device else []
+        for part in parts:
+            done = _silence_part(lib, part)
+            changed += done
+            if not done:
+                LOGGER.info("[audio-ducking] %s has no mute or volume to lower", _device_name(lib, part))
+        if changed:
+            LOGGER.info("[audio-ducking] muted %s inside the Multi-Output Device", sorted({_device_name(lib, c[0]) for c in changed}))
+    except Exception:
+        LOGGER.warning("[audio-ducking] could not mute the devices inside the output", exc_info=True)
+    return changed
+
+
+def restore_output_parts(changed: list[tuple]) -> None:
+    lib = _load_coreaudio()
+    if lib is None:
+        return
+    for part, selector, element, kind, old in reversed(changed):
+        try:
+            if not _set_value(lib, part, selector, element, kind, old):
+                LOGGER.warning("[audio-ducking] could not restore %s on device %d", selector, part)
+        except Exception:
+            LOGGER.warning("[audio-ducking] could not restore %s on device %d", selector, part, exc_info=True)
+
+
 # Calls hold output open all through a meeting and ignore the play/pause key,
 # so they say nothing about whether music is playing.
 CALL_APPS = frozenset({
