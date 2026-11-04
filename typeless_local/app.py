@@ -99,6 +99,11 @@ SEND_SETTLE_S = 0.1
 # race; deciding to send is done under this lock on both sides.
 _SEND_LOCK = threading.Lock()
 MIN_MIC_STARTUP_SECONDS = 0.75
+# After the stop press the microphone keeps listening this long. The last
+# syllable is still on its way when the key goes down: a mic delivers sound
+# 50-250 ms late (Bluetooth the most), and people press as they say the last
+# word, not after it. Stopping on the press cut that word off.
+STOP_TAIL_S = 0.3
 # A non-Chinese transcript this short is usually Whisper inventing a word over
 # noise ("you", "Bye."), but it is also how "OK" and "Yes" come out. Whisper's
 # own confidence tells them apart: invented words score low. A language the
@@ -1727,6 +1732,25 @@ class TypelessLocalApp:
         session_id = getattr(self, "_active_session_id", 0)
         self.state = "processing"
         self._set_menubar("processing")
+        self.capsule.show("transcribing")
+        tail = float(getattr(self, "stop_tail_s", STOP_TAIL_S))
+        if tail <= 0:
+            self._stop_microphone(session_id)
+            return
+        timer = threading.Timer(tail, self._stop_microphone_after_tail, args=(session_id,))
+        timer.daemon = True
+        timer.start()
+
+    def _stop_microphone_after_tail(self, session_id: int) -> None:
+        with self._lock:
+            # Cancelled during the tail: _cancel has stopped the microphone already,
+            # and it may be recording the next dictation by now.
+            if self.state == "processing" and session_id == getattr(self, "_active_session_id", 0):
+                self._stop_microphone(session_id)
+
+    def _stop_microphone(self, session_id: int) -> None:
+        """Close the microphone and hand the recording on to be heard."""
+
         try:
             audio = self.recorder.stop()
         except Exception:
@@ -1742,7 +1766,6 @@ class TypelessLocalApp:
         self._restore_audio_ducking()
         self._play_sound("Pop")
         self._processing_started_at = time.monotonic()
-        self.capsule.show("transcribing")
         stretches, self._stretches = getattr(self, "_stretches", []), []
         heard_until = int(getattr(self.recorder, "heard_until", 0))
         future = self.executor.submit(
@@ -1755,7 +1778,8 @@ class TypelessLocalApp:
         self._active_session_id = getattr(self, "_active_session_id", 0) + 1
         self._cancel_recording_timeout()
         self._stop_holding()
-        if was == "recording":
+        # "processing" too: the microphone stays open for STOP_TAIL_S after the stop press.
+        if was == "recording" or getattr(self.recorder, "is_recording", False):
             try:
                 self.recorder.stop()
             except Exception:

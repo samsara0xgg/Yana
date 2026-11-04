@@ -24,6 +24,13 @@ from typeless_local.refine import MissingAPIKey, RefineResult
 TARGET_PID = 4242
 
 
+@pytest.fixture(autouse=True)
+def _stop_on_the_press(monkeypatch):
+    """The microphone closes at once on stop here; the tail after the press has its own tests."""
+
+    monkeypatch.setattr(app_module, "STOP_TAIL_S", 0)
+
+
 class _FakeOverlay:
     """Records what the capsule was asked to draw."""
 
@@ -777,6 +784,68 @@ def test_cancel_while_recording_says_so() -> None:
     assert app.recorder.stopped is True
     assert app.overlay.calls == [("show", "cancelled", {})]
     assert _ManualTimer.made[-1].delay == 0.8
+
+
+class _TailRecorder(_FakeRecorder):
+    @property
+    def is_recording(self) -> bool:
+        return self.started and not self.stopped
+
+
+def _tail_timers(monkeypatch) -> list:
+    made = []
+
+    class Timer:
+        def __init__(self, delay, callback, args=()) -> None:
+            self.delay, self.callback, self.args, self.daemon = delay, callback, args, False
+            made.append(self)
+
+        def start(self) -> None:
+            pass
+
+        def fire(self) -> None:
+            self.callback(*self.args)
+
+    monkeypatch.setattr(app_module.threading, "Timer", Timer)
+    monkeypatch.setattr(app_module, "STOP_TAIL_S", 0.3)
+    return made
+
+
+def test_the_microphone_keeps_listening_briefly_after_the_stop_press(monkeypatch) -> None:
+    timers = _tail_timers(monkeypatch)
+    app = _recording_app()
+    app.recorder = _TailRecorder()
+    app.recorder.started = True
+    app.state, app._active_session_id = "recording", 3
+
+    app._finish_recording()
+
+    # The last word is still arriving: nothing is closed or heard yet, but the capsule has moved on.
+    assert app.state == "processing" and app.recorder.stopped is False
+    assert app.executor.submissions == []
+    assert app.overlay.shown()[-1] == "transcribing"
+    assert [timer.delay for timer in timers] == [0.3]
+
+    timers[0].fire()
+
+    assert app.recorder.stopped is True
+    assert app.executor.submissions[0][0] == app._process_audio
+
+
+def test_cancel_during_the_tail_closes_the_microphone_and_hears_nothing(monkeypatch) -> None:
+    timers = _tail_timers(monkeypatch)
+    app = _recording_app()
+    app.recorder = _TailRecorder()
+    app.recorder.started = True
+    app.state, app._active_session_id = "recording", 3
+
+    app._finish_recording()
+    app._cancel()
+    timers[0].fire()
+
+    assert app.recorder.stopped is True
+    assert app.state == "idle"
+    assert app.executor.submissions == []
 
 
 class _FailingRefiner:
