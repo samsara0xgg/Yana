@@ -49,6 +49,9 @@ CONNECT_TIMEOUT_S = 5.0
 # After the stop: how long the last sentence may take before Whisper hears the recording instead.
 FINISH_TIMEOUT_S = 4.0
 FRAME_SECONDS = 0.1
+# Quiet sent after the last of the recording, before finish-task: the stream
+# model settles the last word once it hears a pause, and a stop press gives it none.
+FINISH_SILENCE_S = 0.3
 HOTWORD_WEIGHT = 4
 MAX_HOTWORDS = 2000
 # Weights run 1-5. The model also takes 50 for a "super" hot word, which pulls
@@ -207,6 +210,7 @@ class QwenStream:
         """After the stop: the text, or None when Whisper should hear it instead."""
 
         if not self._closed:
+            self.feed(np.zeros(int(self._sample_rate * FINISH_SILENCE_S), dtype=np.float32))
             self._closed = True
             if self._pending:
                 self._frames.put(bytes(self._pending))

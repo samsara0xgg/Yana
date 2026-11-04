@@ -815,7 +815,7 @@ def _tail_threads(monkeypatch) -> list:
             self.target(*self.args)
 
     monkeypatch.setattr(app_module.threading, "Thread", Thread)
-    monkeypatch.setattr(app_module, "STOP_TAIL_S", 0.6)
+    monkeypatch.setattr(app_module, "STOP_TAIL_S", 0.8)
     return made
 
 
@@ -842,7 +842,7 @@ def test_the_microphone_closes_once_the_sound_of_the_stop_press_has_arrived(monk
 
     threads[0].run()
 
-    assert app.recorder.waited == [(pytest.approx(pressed + app_module.STOP_MARGIN_S), 0.6)]
+    assert app.recorder.waited == [(pytest.approx(pressed + app_module.STOP_MARGIN_S), 0.8)]
     assert app.recorder.stopped is True
     assert app.executor.submissions[0][0] == app._process_audio
 

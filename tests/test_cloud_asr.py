@@ -122,7 +122,10 @@ def test_streams_audio_and_returns_the_sentences():
     assert server.run_task["payload"]["model"] == cloud_asr.MODEL
     assert params["format"] == "pcm" and params["sample_rate"] == 16000
     assert params["vocabulary"] == {"言字": 4, "Claude Code": 4}
-    assert len(server.audio) == audio.size * 2  # every sample, as 16-bit PCM
+    # every sample as 16-bit PCM, then a little quiet so the last word settles
+    silence = int(16000 * cloud_asr.FINISH_SILENCE_S)
+    assert len(server.audio) == (audio.size + silence) * 2
+    assert not any(server.audio[audio.size * 2 :])
 
 
 def test_a_quiet_sentence_in_the_background_is_left_out():
@@ -305,7 +308,7 @@ def test_a_refused_context_starts_again_without_it_and_is_left_out_after():
     assert server.refused["payload"]["input"]["context"]
     assert result is not None and result.text == "好的。"
     assert server.run_task["payload"]["input"] == {} and "language_hints" not in server.run_task["payload"]["parameters"]
-    assert len(server.audio) == audio.size * 2  # nothing lost while it started again
+    assert len(server.audio) == (audio.size + int(16000 * cloud_asr.FINISH_SILENCE_S)) * 2  # nothing lost while it started again
     assert cloud_asr._EXTRAS_REFUSED.is_set()
 
 

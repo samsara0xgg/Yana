@@ -103,9 +103,11 @@ MIN_MIC_STARTUP_SECONDS = 0.75
 # The microphone closes once the sound from the moment of the stop press has
 # arrived, not on the press. A mic delivers sound 50-250 ms late (Bluetooth the
 # most), so closing on the press cut off the last word. STOP_MARGIN_S more is
-# kept for the last syllable's ring; STOP_TAIL_S caps the wait (0 = close at once).
-STOP_MARGIN_S = 0.1
-STOP_TAIL_S = 0.6
+# kept because the key goes down while the last syllable is still being said
+# (a Chinese syllable runs ~0.2-0.3 s); 0.1 s was tried and still clipped it.
+# STOP_TAIL_S caps the wait (0 = close at once).
+STOP_MARGIN_S = 0.3
+STOP_TAIL_S = 0.8
 # A press time further off than this from now is from another clock or stale: use now.
 PRESS_CLOCK_SLACK_S = 1.0
 # A non-Chinese transcript this short is usually Whisper inventing a word over
